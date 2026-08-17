@@ -1,0 +1,47 @@
+# Beaver Agent — Python dependencies
+#
+# Install:  pip install -r requirements.txt
+#
+# Memory backend
+# --------------
+# All memory is local — no Docker required:
+#   chromadb                    — in-process vector store (long-term memory)
+#   langgraph-checkpoint-sqlite — SQLite-backed graph checkpointer (session state)
+
+# ── LangGraph / LangChain core ────────────────────────────────────────────────
+langgraph~=1.2
+langchain-core~=1.0
+
+# ── Model providers ───────────────────────────────────────────────────────────
+langchain-ollama~=1.1
+
+# ── Memory — ChromaDB (local, no Docker) ──────────────────────────────────────
+chromadb>=1.0.20
+
+# ── Checkpointer — SQLite ─────────────────────────────────────────────────────
+langgraph-checkpoint-sqlite~=2.0
+
+# ── HTTP / async ──────────────────────────────────────────────────────────────
+httpx~=0.27
+
+# ── Configuration ─────────────────────────────────────────────────────────────
+pydantic~=2.0
+python-dotenv~=1.0
+
+# ── TUI / CLI ─────────────────────────────────────────────────────────────────
+textual>=0.70,<1.0
+rich~=13.7
+
+# ── Web UI (third interface — fixes Arabic/RTL rendering CLI/TUI can't do) ────
+fastapi~=0.110
+uvicorn[standard]~=0.27
+
+# ── System ────────────────────────────────────────────────────────────────────
+psutil~=5.9
+
+# ── MCP (Model Context Protocol) ──────────────────────────────────────────────
+mcp>=1.6,<2.0
+langchain-mcp-adapters~=0.3
+
+# ── Plugin extras ─────────────────────────────────────────────────────────────
+duckduckgo-search~=6.0

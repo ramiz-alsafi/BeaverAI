@@ -1,0 +1,42 @@
+# ── Secrets — never commit ─────────────────────────────────────────────────
+.env
+*.pem
+*.key
+*.crt
+
+# ── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ── Node / web frontend ─────────────────────────────────────────────────────
+web/frontend/node_modules/
+web/frontend/dist/
+web/frontend/*.tsbuildinfo
+npm-debug.log*
+
+# ── Local data & runtime state (regenerated on first run) ──────────────────
+chroma_data/
+web/chroma_data/
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+
+# ── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+
+# ── Notes (user content, not source) ────────────────────────────────────────
+notes/
+!notes/.gitkeep
+
+# ── Editor / OS ──────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
