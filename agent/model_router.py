@@ -11,7 +11,16 @@ logger = logging.getLogger("beaver")
 
 
 # ── Provider patterns (checked in order) ──────────────────────────────────────
-
+# [FIX-ROUTER-1] These patterns match on model-NAME PREFIX alone, with no
+# awareness that Ollama's own model library ships tags that collide with
+# them — a real, current example: OpenAI's own open-weight release is
+# distributed through Ollama as "gpt-oss:20b" / "gpt-oss:120b", which
+# starts with "gpt-" and was matching the openai pattern below, routing a
+# fully local model to _build_openai (fails on missing OPENAI_API_KEY, or
+# worse, silently hits the real OpenAI API with a model name it doesn't
+# recognize if a key happens to be set for something else). Same problem
+# for llama3-gradient / llama3-groq-tool-use / llama3-chatqa (all real
+# Ollama library entries) against the groq pattern below.
 _PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"^gpt-|^o1-|^o3-|^o4-|^text-davinci", re.I), "openai"),
     (re.compile(r"^claude-",                            re.I), "anthropic"),
@@ -22,7 +31,20 @@ _PATTERNS: list[tuple[re.Pattern, str]] = [
 
 
 def _detect_provider(model: str) -> str:
-    """Infer provider from model name. Returns 'ollama' if nothing matches."""
+    """Infer provider from model name. Returns 'ollama' if nothing matches.
+
+    [FIX-ROUTER-1] Ollama's tag format is always "name:tag" (e.g.
+    "qwen2.5:7b", "gpt-oss:20b", "llama3-gradient:8b") — no cloud
+    provider's model ID is ever colon-delimited (OpenAI: "gpt-4o",
+    Anthropic: "claude-sonnet-4-6", Groq: "llama3-70b-8192"). A colon is
+    therefore an unambiguous, cheap signal that this is a local Ollama
+    tag, checked BEFORE the name-prefix patterns below so a colliding
+    Ollama library name (gpt-oss:*, llama3-gradient:*, etc.) never
+    reaches them. Runs even if MODEL_PROVIDER wasn't explicitly set to
+    "ollama"/"local" — this is the auto-detect fallback path.
+    """
+    if ":" in model:
+        return "ollama"
     for pattern, provider in _PATTERNS:
         if pattern.match(model):
             return provider
