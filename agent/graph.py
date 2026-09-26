@@ -14,7 +14,7 @@ inside your async entry point after the checkpointer context is open:
             beaver_graph = create_beaver_graph(checkpointer)
             await run_app(beaver_graph)
 
-This is required because AsyncRedisSaver holds an open Redis connection
+This is required because AsyncSqliteSaver holds an open aiosqlite connection
 that must remain live for the entire lifetime of the compiled graph.
 Compiling at import time (the old pattern) raced against the event loop
 and passed a context-manager object instead of a live saver instance.
@@ -30,14 +30,21 @@ Model communication
 
 Memory integrations
 -------------------
-- RunnableConfig injected into call_model + execute_tools so thread_id is
-  available inside nodes for short-term Redis keying.
-- Long-term RAG: search_similar() results are appended to the system prompt
-  before every LLM call.  If Postgres/pgvector is down the call proceeds
-  without memories — never blocks.
-- Short-term write: every AI response and every batch of tool outputs are
-  appended to the Redis short-term buffer so the TUI/CLI can read recent
-  context without touching LangGraph state directly.
+[FIX-DOC-MEMORY] This section previously described a Redis short-term
+buffer + Postgres/pgvector long-term store. Neither exists in this
+codebase anymore — see agent/config.py's own "Memory — ChromaDB (replaces
+Redis + PostgreSQL/pgvector)" comment. Corrected to match what's actually
+implemented:
+- Short-term / conversation history: persisted entirely by the LangGraph
+  checkpointer (memory/checkpointer.py — AsyncSqliteSaver, falling back to
+  in-process MemorySaver if unavailable), keyed by thread_id. There is no
+  separate short-term buffer — RunnableConfig's thread_id is used for the
+  checkpointer's own per-thread state and for structured_notes.py's
+  per-thread note isolation (active_thread_id_var), not for any Redis key.
+- Long-term RAG: search_similar() (memory/long_term.py, ChromaDB +
+  Ollama's /api/embed) results are appended to the system prompt before
+  every LLM call. If ChromaDB is unavailable (package not installed) the
+  call proceeds without memories — never blocks. See _inject_long_term_memories.
 
 Personas
 --------
@@ -126,6 +133,35 @@ Fix log
         and on_tool_end on all callbacks so Langfuse sees their spans.
         Previously astream_invoke bypassed LangChain's normal ainvoke()
         path entirely, making streaming tool calls invisible in Langfuse.
+
+[FIX-21] _extract_json_tool_call's marker list has always recognized
+        single-quoted tool-call starts ("{'tool'", "{'thought'") but
+        nothing downstream ever actually parsed them: the quote-tracking
+        in the brace matcher only toggled on '"', and the final parse was
+        a bare json.loads() call, which rejects single-quoted JSON
+        outright. Any local model that emitted {'tool': 'x', ...} instead
+        of double-quoted JSON silently got treated as narration/blank and
+        cost a full retry turn for a call that was actually well-formed.
+        Added _lenient_json_loads() (strict JSON -> Python-literal
+        normalization -> ast.literal_eval, in that order) and made the
+        brace matcher's in_str tracking quote-aware so it doesn't
+        miscount depth inside single-quoted string values either.
+
+[FIX-ROUTER-2] _get_cached_llm() (and the get_llm() builder it calls in
+        model_router.py) can raise ImportError (SDK not installed) or
+        EnvironmentError (API key missing) the first time a given
+        (model, provider, temperature) is requested — the exact failure a
+        user hits when switching MODEL_PROVIDER to a new stack. This call
+        used to sit outside call_model's try/except, so it crashed the
+        whole turn with a raw unhandled exception instead of the same
+        clean [MODEL ERROR] message the ainvoke()-failure path already
+        produces. Now wrapped in its own try/except (no cache eviction
+        needed — construction failures never get inserted into
+        _LLM_CACHE in the first place). See also model_router.py's
+        [FIX-ROUTER-1]: real Ollama library tags like "gpt-oss:20b" and
+        "llama3-gradient:8b" were being name-prefix-matched to cloud
+        providers (openai / groq) by _detect_provider before this
+        propagation bug would even trigger for them.
 """
 import asyncio
 import contextvars
@@ -718,6 +754,53 @@ def _format_tool_list(tools: List[BaseTool]) -> str:
     return "\n".join(lines)
 
 
+def _lenient_json_loads(chunk: str) -> Optional[Dict[str, Any]]:
+    """Parse a candidate tool-call chunk, tolerating the malformed-but-common
+    variants small/quantised local models emit instead of strict JSON.
+
+    [FIX-21] Strict json.loads() alone silently rejected two shapes the
+    marker list in _extract_json_tool_call already anticipated but never
+    actually handled:
+      - Single-quoted strings, e.g. {'tool': 'x', 'args': {...}} — the
+        marker search recognizes "{'tool'" / "{'thought'" as valid starts,
+        but json.loads() has always rejected single-quoted JSON outright,
+        so every such response silently returned None here and got treated
+        as narration/blank upstream, burning a full retry call on a
+        tool-call that was actually well-formed.
+      - Python literals (True/False/None) inside args, which some local
+        models substitute for true/false/null.
+    Tries strict JSON first (the common case, cheapest), then a
+    literal-normalized JSON pass, then ast.literal_eval as a last resort
+    (safe here — it only ever evaluates literal structures, never executes
+    code, and we discard anything that isn't a dict). Returns None if
+    nothing parses.
+    """
+    try:
+        return json.loads(chunk)
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # Python-literal booleans/None -> JSON equivalents. Word-boundaried so
+    # this can't corrupt a real string value that happens to contain these
+    # words, e.g. an arg like "reason": "True positive".
+    normalized = re.sub(r"\bTrue\b", "true", chunk)
+    normalized = re.sub(r"\bFalse\b", "false", normalized)
+    normalized = re.sub(r"\bNone\b", "null", normalized)
+    try:
+        return json.loads(normalized)
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    try:
+        import ast
+        obj = ast.literal_eval(normalized)
+        if isinstance(obj, dict):
+            return obj
+    except (ValueError, SyntaxError, MemoryError, RecursionError):
+        pass
+    return None
+
+
 def _extract_json_tool_call(text: str) -> Optional[Dict[str, Any]]:
     
     if not text:
@@ -736,7 +819,13 @@ def _extract_json_tool_call(text: str) -> Optional[Dict[str, Any]]:
         return None
 
     depth = 0
-    in_str = False
+    # [FIX-21] Track WHICH quote char opened the current string (or None),
+    # not just a bool — the old bool-only version only toggled on '"',
+    # so a single-quoted string value containing a literal '{' or '}'
+    # (rare, but possible in free-text args) could throw off brace depth
+    # counting for the single-quoted tool-call shape the marker list above
+    # already claims to support.
+    in_str: Optional[str] = None
     esc = False
     for i in range(start, len(cleaned)):
         c = cleaned[i]
@@ -744,19 +833,19 @@ def _extract_json_tool_call(text: str) -> Optional[Dict[str, Any]]:
             esc = False
         elif c == "\\" and in_str:
             esc = True
-        elif c == '"':
-            in_str = not in_str
         elif in_str:
-            continue
+            if c == in_str:
+                in_str = None
+        elif c in ('"', "'"):
+            in_str = c
         elif c == "{":
             depth += 1
         elif c == "}":
             depth -= 1
             if depth == 0:
                 chunk = cleaned[start : i + 1]
-                try:
-                    obj = json.loads(chunk)
-                except (json.JSONDecodeError, ValueError):
+                obj = _lenient_json_loads(chunk)
+                if obj is None:
                     return None
                 if isinstance(obj, dict) and isinstance(obj.get("tool"), str):
                     return obj
@@ -934,7 +1023,32 @@ async def call_model(
     # merge_configs() combines the parent config's callback manager with
     # Beaver's own tracer instead of replacing it.
     invoke_cfg: Dict[str, Any] = merge_configs(config, {"callbacks": get_callbacks()})
-    llm = _get_cached_llm()
+
+    # [FIX-ROUTER-2] _get_cached_llm() can raise on first use of a given
+    # (model, provider, temperature) — ImportError (SDK not installed, e.g.
+    # "pip install langchain-anthropic") or EnvironmentError (API key not
+    # set) from model_router.py's per-provider builders. This is exactly
+    # the failure mode a user switching MODEL_PROVIDER to a new stack hits
+    # first, and it used to propagate straight out of this node as a raw
+    # unhandled exception — crashing the whole turn — instead of getting
+    # the same clean, actionable [MODEL ERROR] message the ainvoke() path
+    # below already produces for a live connection failure. Nothing is
+    # cached on a construction failure (the dict write only happens after
+    # get_llm() returns successfully), so there's nothing to evict here —
+    # unlike the ainvoke() except block below, which evicts a client that
+    # WAS successfully built but failed mid-call.
+    try:
+        llm = _get_cached_llm()
+    except Exception as exc:
+        logger.warning("[LLM] Client construction failed (%s) — ending turn cleanly.", exc)
+        error_response = AIMessage(
+            content=(
+                f"[MODEL ERROR]: Could not initialize the model client ({exc}). "
+                f"Check MODEL_NAME/MODEL_PROVIDER and the matching API key/package "
+                f"in .env, then try again."
+            )
+        )
+        return {"messages": [error_response], "iteration": iteration + 1}
 
     # [FIX-JSON] No more .bind_tools() — every call is a plain ainvoke() and
     # tool calls are recovered by parsing {"tool": ..., "args": {...}} out of
