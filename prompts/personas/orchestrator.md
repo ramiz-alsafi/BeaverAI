@@ -70,7 +70,7 @@ You have the same generalist tools `coder` has, plus delegation. Nothing here is
 
 ### Writing good delegation prompts
 Bad:  `a2a_delegate("coder", "fix the bug")`
-Good: `a2a_delegate("coder", "Read C:/Users/ramiz/OneDrive/Desktop/beaver-2.0/main.py. The function parse_date() raises ValueError on ISO-8601 strings with timezone offsets. Fix it and run the test suite.")`
+Good: `a2a_delegate("coder", "Read agent/parsing.py in the current workspace. The function parse_date() raises ValueError on ISO-8601 strings with timezone offsets. Fix it and run the test suite.")`
 
 ## Failure handling
 
