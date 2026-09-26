@@ -19,6 +19,16 @@ SHARED_PROMPTS_DIR   = PROMPTS_DIR / "shared"
 
 load_dotenv(BASE_DIR / ".env")
 
+# [FIX-PROMPT-CACHE] Keyed by ("system", None) | ("persona", name) | ("shared", name).
+# Prompt files are edit-then-restart, same as tool_manuals/ (see graph.py's
+# _load_tool_manual) — no runtime hot-reload path exists for prompts/ the
+# way one does for plugins/ and MCP_SERVERS, so caching them for the life
+# of the process is safe and removes a disk read from every single
+# reasoning-loop iteration. Shared module state (not per-instance) since
+# RuntimeConfig itself is effectively a singleton per process/session and
+# the prompt files on disk don't vary by session.
+_PROMPT_CACHE: dict = {}
+
 
 # ── RuntimeConfig ──────────────────────────────────────────────────────────────
 class RuntimeConfig:
@@ -182,30 +192,58 @@ class RuntimeConfig:
         state, not normal operation) but still carries the core tool-call
         mandate and honesty rule so the agent doesn't go completely
         uninstructed even in total prompt-loading failure.
+
+        [FIX-PROMPT-CACHE] Cached in _PROMPT_CACHE — see load_persona_prompt
+        for why.
         """
+        cache_key = ("system", None)
+        if cache_key in _PROMPT_CACHE:
+            return _PROMPT_CACHE[cache_key]
         if self.system_prompt_path.exists():
-            return self.system_prompt_path.read_text(encoding="utf-8")
-        return (
-            "You are Beaver, an autonomous local AI agent. No persona prompt "
-            "could be loaded (persona: {{FAILED_PERSONA}}) and the system_agent.md "
-            "safety-net prompt is also missing — tell the user this plainly, "
-            "you are running in a minimally-configured fallback state.\n\n"
-            "Tools bound to you are listed below even though this description "
-            "is minimal — call them directly to complete tasks, never narrate "
-            "what you would do instead of doing it. Never invent results, "
-            "file contents, or tool output — report failures honestly.\n\n"
-            "{{TOOL_LIST}}"
-        )
+            text = self.system_prompt_path.read_text(encoding="utf-8")
+        else:
+            text = (
+                "You are Beaver, an autonomous local AI agent. No persona prompt "
+                "could be loaded (persona: {{FAILED_PERSONA}}) and the system_agent.md "
+                "safety-net prompt is also missing — tell the user this plainly, "
+                "you are running in a minimally-configured fallback state.\n\n"
+                "Tools bound to you are listed below even though this description "
+                "is minimal — call them directly to complete tasks, never narrate "
+                "what you would do instead of doing it. Never invent results, "
+                "file contents, or tool output — report failures honestly.\n\n"
+                "{{TOOL_LIST}}"
+            )
+        _PROMPT_CACHE[cache_key] = text
+        return text
 
     def load_persona_prompt(self, persona_name: str) -> str:
         """Load a named persona prompt from prompts/personas/<persona_name>.md.
 
         Falls back to prompts/skills/<persona_name>.md for backwards
         compatibility while you migrate the directory.
+
+        [FIX-PROMPT-CACHE] call_model() (agent/graph.py) calls this on
+        every single reasoning-loop iteration — up to max_loops times per
+        user turn, across every concurrent WebSocket session and every
+        A2A sub-agent — and it was re-reading the .md file from disk every
+        time. Prompt files have no hot-reload contract (unlike plugins/
+        and MCP_SERVERS, which do — see skills/__init__.py and
+        skills/mcp_loader.py): editing one requires a restart, same as
+        tool_manuals/, which graph.py's _load_tool_manual() already
+        caches. Cached here the same way. A missing-file FileNotFoundError
+        is NOT cached — a persona file created after startup (or a typo
+        fixed without restart) should be picked up on the very next call,
+        not require yet another restart just to escape a cached failure.
         """
+        cache_key = ("persona", persona_name)
+        if cache_key in _PROMPT_CACHE:
+            return _PROMPT_CACHE[cache_key]
+
         path = PERSONAS_PROMPTS_DIR / f"{persona_name}.md"
         if path.exists():
-            return path.read_text(encoding="utf-8")
+            text = path.read_text(encoding="utf-8")
+            _PROMPT_CACHE[cache_key] = text
+            return text
 
         legacy_path = PROMPTS_DIR / "skills" / f"{persona_name}.md"
         if legacy_path.exists():
@@ -214,7 +252,9 @@ class RuntimeConfig:
                 "Move it to prompts/personas/ to silence this warning.",
                 persona_name,
             )
-            return legacy_path.read_text(encoding="utf-8")
+            text = legacy_path.read_text(encoding="utf-8")
+            _PROMPT_CACHE[cache_key] = text
+            return text
 
         raise FileNotFoundError(
             f"Persona prompt not found: {path}\n"
@@ -229,11 +269,22 @@ class RuntimeConfig:
         so they're written once instead of duplicated into each persona
         file. Returns "" if the module doesn't exist so callers can append
         it unconditionally without checking existence themselves.
+
+        [FIX-PROMPT-CACHE] Same reasoning as load_persona_prompt — this is
+        appended to EVERY persona's prompt on EVERY reasoning-loop
+        iteration (three separate files, currently), so it's the single
+        hottest disk read in the whole prompt-assembly path. Cached here
+        too, including the "" result for a module that doesn't exist, so
+        a call site can't be fooled into re-checking the filesystem every
+        turn just because a module was never created.
         """
+        cache_key = ("shared", name)
+        if cache_key in _PROMPT_CACHE:
+            return _PROMPT_CACHE[cache_key]
         path = SHARED_PROMPTS_DIR / f"{name}.md"
-        if path.exists():
-            return path.read_text(encoding="utf-8")
-        return ""
+        text = path.read_text(encoding="utf-8") if path.exists() else ""
+        _PROMPT_CACHE[cache_key] = text
+        return text
 
     # ── Ollama model listing (local only) ─────────────────────────────────────
     def list_ollama_models(self) -> list[str]:
