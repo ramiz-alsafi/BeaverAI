@@ -162,6 +162,30 @@ Fix log
         "llama3-gradient:8b" were being name-prefix-matched to cloud
         providers (openai / groq) by _detect_provider before this
         propagation bug would even trigger for them.
+
+[FIX-SCOPE-DOMAIN] The scope gate below only ever checked a tool_args key
+        literally named "command" (os_exec), and only for raw IP
+        addresses found inside it (agent/tools.py's is_in_scope). But
+        pentester.md's own "Scope & authorization" section tells the
+        model "every command is checked against target_scope... If a
+        tool call against a domain/public IP comes back [SCOPE BLOCK],
+        that's a configuration gap" — a promise that was simply false for
+        every domain/URL-based tool: subdomain_enum, subdomain_bruteforce
+        (domain=...), http_get/post/head/check, the http_session_* tools,
+        and probe_payloads (url=..., urls=...) had zero scope enforcement.
+        A pentester-mode agent could DNS-bruteforce or send SQLi/XSS probe
+        payloads against a completely unauthorized target while being told
+        by its own system prompt that the runtime "has its back." Added
+        agent/tools.py's is_target_in_scope() (hostname exact/subdomain
+        matching against domain scope entries, falling back to IP/CIDR
+        matching for a literal-IP host) and wired it in below — gated to
+        active_persona == "pentester" specifically, since http_probe.py's
+        http_get/post/head/check are also bound to coder/seo/researcher/
+        standard/orchestrator for ordinary internet API use, and
+        target_scope's default (localhost + private ranges) has no
+        domain entries — checking this universally would have silently
+        broken normal HTTP calls for every persona not running a pentest
+        engagement.
 """
 import asyncio
 import contextvars
@@ -182,7 +206,7 @@ from agent.config import runtime_config
 from agent.model_router import get_llm
 from agent.state import AgentState
 from agent.telemetry import get_callbacks, logger
-from agent.tools import is_in_scope
+from agent.tools import is_in_scope, is_target_in_scope
 from memory.compactor import compact_messages
 from skills import get_persona_tools, get_persona_tools_async
 from agent.bus import tui_bus
@@ -1205,6 +1229,25 @@ def _flatten_callback_handlers(cb: Any) -> List[Any]:
     return list(handlers) if handlers else []
 
 
+# [FIX-SCOPE-DOMAIN] Explicit allowlist, not a persona+argname heuristic.
+# web_search.py's web_search/web_fetch/ddg_news also take a "url"-ish
+# argument and are also bound to the pentester persona, but pentester.md
+# documents them explicitly as general research ("General web search and
+# page fetch... Exploit writeups, advisory detail") — not target-directed,
+# and correctly should NOT be scope-gated. This list matches exactly the
+# tools pentester.md itself documents as operating directly against the
+# target (root domain, discovered subdomains, SSRF probes, etc.) — see
+# that file's tool table for subdomain_enum / subdomain_bruteforce /
+# http_get / http_post / http_head / http_check / http_session_get /
+# http_session_post / probe_payloads. See execute_tools()'s scope gate
+# below and agent/tools.py's is_target_in_scope() for the full finding.
+_SCOPE_GATED_TARGET_TOOLS = frozenset({
+    "subdomain_enum", "subdomain_bruteforce",
+    "http_get", "http_post", "http_head", "http_check",
+    "http_session_get", "http_session_post", "probe_payloads",
+})
+
+
 async def execute_tools(
     state: AgentState,
     config: Optional[RunnableConfig] = None,  # FIX-3
@@ -1286,12 +1329,43 @@ async def execute_tools(
 
         # ── Scope gate ─────────────────────────────────────────────────────────
         command = tool_args.get("command", "")
+        # [FIX-SCOPE-DOMAIN] See agent/tools.py's is_target_in_scope docstring
+        # for the full finding: pentester.md tells the model every tool call
+        # is scope-checked, but only os_exec's "command" string (IP-only
+        # matching) ever actually was. subdomain_enum/subdomain_bruteforce
+        # (domain=...) and http_get/post/head/check + the http_session_*
+        # tools + probe_payloads (url=..., urls=...) were completely
+        # unchecked. Gated to active_persona == "pentester" AND tool_name in
+        # _SCOPE_GATED_TARGET_TOOLS (an explicit allowlist, not just "has a
+        # url/domain argument") — web_search.py's web_search/web_fetch/
+        # ddg_news also take a url-ish argument and are also bound to the
+        # pentester persona, but pentester.md documents those explicitly as
+        # general research, not target-directed, so they're deliberately
+        # excluded from the allowlist. And http_probe.py's http_get/post/
+        # head/check are ALSO bound to coder/seo/researcher/standard/
+        # orchestrator for ordinary internet API use outside any pentest
+        # engagement — the persona check keeps those personas unaffected
+        # even though their tool names are on the same allowlist.
+        target_value = (
+            tool_args.get("domain") or tool_args.get("url") or tool_args.get("urls") or ""
+        )
+        scope_violation = ""
         if command and not is_in_scope(command, scope):
+            scope_violation = command
+        elif (
+            active_persona == "pentester"
+            and tool_name in _SCOPE_GATED_TARGET_TOOLS
+            and target_value
+            and not is_target_in_scope(target_value, scope)
+        ):
+            scope_violation = target_value
+
+        if scope_violation:
             consecutive_failures += 1
             tool_outputs.append(
                 ToolMessage(
                     content=(
-                        f"[SCOPE BLOCK]: '{command}' targets an IP outside "
+                        f"[SCOPE BLOCK]: '{scope_violation}' targets a host outside "
                         f"authorized scope {scope}. Aborted."
                     ),
                     tool_call_id=call_id,
