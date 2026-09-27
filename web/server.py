@@ -843,11 +843,23 @@ async def _run_turn(ws: WebSocket, user_input: str, state: Dict[str, Any]) -> No
                 output = data.get("output")
                 tokens = 0
                 if output is not None:
+                    # [FIX-TOKCOUNT] See cli/ui.py's identical fix: total_tokens
+                    # is input_tokens + output_tokens (LangChain's UsageMetadata
+                    # schema), not an output-token count, so using it as a
+                    # fallback here silently added prompt length into the
+                    # running total sent to the frontend as "tokens_used".
                     usage = getattr(output, "usage_metadata", None) or {}
-                    tokens = usage.get("output_tokens") or usage.get("total_tokens") or 0
+                    tokens = usage.get("output_tokens") or 0
                     if not tokens:
                         meta = getattr(output, "response_metadata", None) or {}
                         tokens = meta.get("eval_count", 0)
+                    if not tokens:
+                        # [FIX-TOKCOUNT] Parity with cli/ui.py's third fallback
+                        # — some non-chat LLM wrappers surface eval_count under
+                        # llm_output.model_extra instead of response_metadata.
+                        llm_out    = getattr(output, "llm_output", None) or {}
+                        token_meta = llm_out.get("model_extra", {}) or {}
+                        tokens     = token_meta.get("eval_count", 0)
                 if tokens:
                     state["token_count"] += tokens
                     await ws.send_text(json.dumps({
@@ -1165,6 +1177,15 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                 if result.get("switch_to_thread"):
                     state["session_id"] = result["switch_to_thread"]
                     state["config"] = {"configurable": {"thread_id": state["session_id"]}}
+
+                # [FIX-RESET] See web/commands.py's cmd_reset docstring —
+                # the `session` dict passed into _dispatch_command above is
+                # a plain copy of state["msg_count"]/state["token_count"],
+                # so a handler mutating it has no effect on the real state.
+                # This explicit signal is how cmd_reset actually zeroes them.
+                if result.get("reset_counters"):
+                    state["msg_count"]   = 0
+                    state["token_count"] = 0
 
                 await ws.send_text(json.dumps({"type": "command_result", **result}))
 
