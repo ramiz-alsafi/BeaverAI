@@ -24,6 +24,7 @@ Tools
 
 import subprocess
 from langchain_core.tools import tool
+from skills.file_ops import get_active_workspace_root
 
 PERSONA = ["coder", "orchestrator", "standard", "researcher"]
 ENABLED = True
@@ -32,7 +33,22 @@ _TIMEOUT = 15  # seconds — git operations should never hang this long
 
 
 def _run(args: list[str], cwd: str | None = None) -> tuple[int, str, str]:
-    """Run a git sub-command, return (returncode, stdout, stderr)."""
+    """Run a git sub-command, return (returncode, stdout, stderr).
+
+    [FIX-GIT-WORKSPACE] cwd now defaults to the ACTIVE SESSION's workspace
+    root (get_active_workspace_root()), not whatever the OS process's cwd
+    happens to be. Previously every git_* call let subprocess inherit
+    os.getcwd() unconditionally — harmless for the CLI (one session per
+    process, and /dir there does call os.chdir()), but broken for the web
+    server: set_session_workspace() deliberately never calls os.chdir()
+    (see file_ops.py's own FIX-6) specifically so one user's /dir doesn't
+    move every other concurrent session's tools. Without this, git_status
+    / git_log / git_diff ignored /dir entirely on the web server and
+    stayed pinned to wherever the process happened to launch, the same
+    way file_ops.py's tools used to before FIX-6 fixed it there.
+    """
+    if cwd is None:
+        cwd = get_active_workspace_root()
     try:
         result = subprocess.run(
             ["git"] + args,
