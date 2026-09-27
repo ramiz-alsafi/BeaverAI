@@ -120,17 +120,33 @@ async def run(
 
 
 def _parse_args() -> dict:
-    """Parse sys.argv into a simple dict of flags and positional args."""
-    flags = {a for a in sys.argv[1:] if a.startswith("--")}
-    positional = [a for a in sys.argv[1:] if not a.startswith("--")]
+    """Parse sys.argv into a simple dict of flags and positional args.
+
+    [FIX-ARGPARSE] The previous version built `positional` with a blind
+    "doesn't start with --" filter over the whole argv, then tried to
+    strip out --thread's value afterwards with `positional.remove(thread_id)`
+    — a value-based removal, which always deletes the FIRST matching
+    string. Whenever the chosen thread_id happened to equal an earlier
+    positional arg (e.g. `python main.py "urgent" coder --thread urgent`,
+    where the thread name coincides with the prompt text), it silently
+    removed the wrong token — corrupting which value ended up as the
+    prompt vs. the persona. Tracking --thread's own argv INDEX (and the
+    index right after it) instead makes exclusion unambiguous regardless
+    of what the values are.
+    """
+    argv = sys.argv[1:]
 
     thread_id = "main"
-    if "--thread" in sys.argv:
-        idx = sys.argv.index("--thread")
-        if idx + 1 < len(sys.argv):
-            thread_id = sys.argv[idx + 1]
-            if thread_id in positional:
-                positional.remove(thread_id)   # removes first occurrence only
+    exclude_idx: set = set()
+    if "--thread" in argv:
+        i = argv.index("--thread")
+        exclude_idx.add(i)
+        if i + 1 < len(argv):
+            thread_id = argv[i + 1]
+            exclude_idx.add(i + 1)
+
+    flags      = {a for j, a in enumerate(argv) if j not in exclude_idx and a.startswith("--")}
+    positional = [a for j, a in enumerate(argv) if j not in exclude_idx and not a.startswith("--")]
 
     return {"flags": flags, "positional": positional, "thread_id": thread_id}
 
