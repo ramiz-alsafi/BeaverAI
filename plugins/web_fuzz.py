@@ -35,6 +35,7 @@ Tools
                          parameter and flag anomalous responses
 """
 
+import os
 import re
 import time
 from urllib.parse import urlencode, urlparse, parse_qsl, urlunparse
@@ -47,26 +48,56 @@ ENABLED  = True
 
 _UA           = "Beaver-Agent/3.0 (web-fuzz)"
 _MAX_BODY     = 4_000
-_MAX_SESSIONS = 10  # simple insertion-order eviction beyond this
+_MAX_SESSIONS = 10  # simple insertion-order eviction beyond this, PER THREAD
 
 _SESSIONS: "dict[str, httpx.Client]" = {}
+
+
+def _current_thread_id() -> str:
+    """Resolve the active conversation thread id.
+
+    Mirrors structured_notes.py's _current_thread_id() exactly: ContextVar
+    first (set by execute_tools on every real graph run), env var as a
+    last-resort fallback for callers outside the graph.
+    """
+    try:
+        from agent.graph import active_thread_id_var
+        return active_thread_id_var.get()
+    except Exception:
+        return os.getenv("BEAVER_THREAD_ID", "default")
 
 
 def _get_session(session_id: str) -> httpx.Client:
     """Return the persistent client for session_id, creating it if needed.
 
-    Evicts the oldest session (dict preserves insertion order in Python
-    3.7+) once _MAX_SESSIONS is exceeded, so a long engagement with many
-    throwaway session_ids can't leak connections indefinitely.
+    [FIX-SESSION-THREAD] _SESSIONS used to be keyed by the bare session_id
+    string alone — e.g. "user_a", exactly the label this module's own
+    docstrings suggest as an example. On a single-user CLI process that's
+    fine, but on the web server, every concurrent WebSocket connection
+    shares this same module-level dict: two completely unrelated pentest
+    engagements running at the same time, both following the docstring's
+    own suggestion to use "user_a"/"user_b" labels, would land on the
+    IDENTICAL dict key and share one authenticated httpx.Client — cookies
+    (real login/session tokens for whatever target application is under
+    test) from one user's engagement leaking straight into a different,
+    unrelated user's session. Same root cause structured_notes.py already
+    fixed for its own per-thread notes (its FIX-NOTES-THREAD) — namespaced
+    the same way here: every key is "<thread_id>::<session_id>", so two
+    engagements only collide if they're actually the same conversation.
+
+    Eviction (_MAX_SESSIONS) is now naturally per-thread too, since a
+    flood of session_ids from one busy engagement can no longer evict a
+    completely different thread's sessions out from under it.
     """
-    if session_id not in _SESSIONS:
+    key = f"{_current_thread_id()}::{session_id}"
+    if key not in _SESSIONS:
         if len(_SESSIONS) >= _MAX_SESSIONS:
-            oldest_id = next(iter(_SESSIONS))
-            _SESSIONS.pop(oldest_id).close()
-        _SESSIONS[session_id] = httpx.Client(
+            oldest_key = next(iter(_SESSIONS))
+            _SESSIONS.pop(oldest_key).close()
+        _SESSIONS[key] = httpx.Client(
             timeout=15.0, follow_redirects=True, headers={"User-Agent": _UA},
         )
-    return _SESSIONS[session_id]
+    return _SESSIONS[key]
 
 
 def _format_headers(headers: httpx.Headers) -> str:
@@ -195,16 +226,25 @@ def http_session_reset(session_id: str = "") -> str:
 
     Parameters
     ----------
-    session_id : the session to clear. Leave empty to clear ALL open
-                 sessions at once (e.g. at the end of an engagement).
+    session_id : the session to clear. Leave empty to clear ALL sessions
+                 in the current engagement/conversation at once (e.g. at
+                 the end of an engagement) — this never touches another
+                 conversation's sessions, even on a shared server process.
     """
+    # [FIX-SESSION-THREAD] See _get_session's docstring — sessions are
+    # namespaced "<thread_id>::<session_id>". "Clear ALL" must only ever
+    # mean "all of THIS thread's sessions": without the prefix filter
+    # below, one engagement's /reset-equivalent would silently close
+    # every other concurrent user's active, authenticated sessions on the
+    # web server too.
+    prefix = f"{_current_thread_id()}::"
     if not session_id:
-        count = len(_SESSIONS)
-        for client in _SESSIONS.values():
-            client.close()
-        _SESSIONS.clear()
-        return f"[http_session_reset] Cleared {count} session(s)."
-    client = _SESSIONS.pop(session_id, None)
+        keys = [k for k in _SESSIONS if k.startswith(prefix)]
+        for k in keys:
+            _SESSIONS.pop(k).close()
+        return f"[http_session_reset] Cleared {len(keys)} session(s)."
+    key = prefix + session_id
+    client = _SESSIONS.pop(key, None)
     if client is None:
         return f"[http_session_reset] No active session '{session_id}' — nothing to clear."
     client.close()
