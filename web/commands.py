@@ -17,6 +17,7 @@ Every handler returns one of:
 """
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
 from typing import Any, Dict
 
@@ -640,6 +641,55 @@ async def cmd_delete_session(thread_id: str, current_thread_id: str = "") -> Dic
     }
 
 
+# ── /reset ────────────────────────────────────────────────────────────────────
+
+def cmd_reset() -> Dict[str, Any]:
+    """Reset the current conversation to a brand-new, empty thread.
+
+    [FIX-RESET] /reset was listed in cmd_help() and in the frontend's
+    command palette ("reset counters") but had no entry in COMMANDS at
+    all — dispatching it always fell through to _dispatch_command's
+    "unknown command: /reset" branch.
+
+    Separately, cli/ui.py's /reset had the opposite problem: it ran, but
+    only cleared its own local display counters and history list — it
+    never reset anything the MODEL sees, because the LangGraph
+    checkpointer persists full conversation state in SQLite keyed by
+    thread_id (see cmd_continue's docstring above), and the CLI reused
+    the same thread_id for the rest of the process's lifetime. The very
+    next message after a "reset" therefore still resumed on top of the
+    complete pre-reset history loaded back from disk — "conversation
+    reset" was cosmetic only, on both interfaces, just in different ways.
+
+    Fixed the same way in both places: rotate to a brand-new thread_id,
+    exactly like starting a fresh session, rather than trying to
+    selectively clear checkpoint rows for the old one — the old thread's
+    rows are left alone on disk (harmless, and still reachable via
+    /continue) rather than deleted, which keeps this simple and avoids
+    duplicating cmd_delete_session's job.
+
+    Reuses the exact "switch_to_thread" + "replay_messages" protocol
+    cmd_continue established above: server.py's dispatch loop already
+    knows to swap state["session_id"]/state["config"] onto whatever
+    thread_id comes back here, and the frontend already clears its own
+    chat log when replay_messages arrives as an empty list (see
+    useBeaverSocket.ts's "reset" dispatch case) — no new frontend wiring
+    needed. "reset_counters" is a second signal server.py checks for
+    to actually zero state["msg_count"]/state["token_count"], since the
+    `session` dict command handlers receive is a plain copy of those
+    values, not a live reference back into `state`.
+    """
+    new_thread_id = f"web-{uuid.uuid4().hex[:12]}"
+    return {
+        "kind": "info",
+        "title": "reset",
+        "lines": ["conversation reset — starting a fresh thread"],
+        "switch_to_thread": new_thread_id,
+        "replay_messages": [],
+        "reset_counters": True,
+    }
+
+
 # ── /help ─────────────────────────────────────────────────────────────────────
 
 def cmd_help() -> Dict[str, Any]:
@@ -691,5 +741,6 @@ COMMANDS = {
     "hud": cmd_hud,
     "status": cmd_hud,
     "monitor": cmd_hud,
+    "reset": cmd_reset,
     "help": cmd_help,
 }
