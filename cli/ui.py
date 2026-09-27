@@ -1,4 +1,3 @@
-
 import asyncio
 import logging as _logging
 import random
@@ -401,12 +400,23 @@ class TerminalUI:
                             output = data.get("output")
                             tokens = 0
                             if output is not None:
+                                # [FIX-TOKCOUNT] usage_metadata.total_tokens is
+                                # input_tokens + output_tokens (LangChain's
+                                # UsageMetadata schema) — it is NOT an
+                                # output-token count. current_token_count is a
+                                # running per-session accumulator of output
+                                # tokens only (that's what render_token_bar
+                                # displays as "context used"), so falling back
+                                # to total_tokens here silently added the
+                                # prompt length into the running total on any
+                                # provider that populates total_tokens without
+                                # output_tokens, inflating the displayed
+                                # context usage every single turn. Removed —
+                                # this now correctly falls through to the
+                                # eval_count / word-count estimates below,
+                                # both of which are genuinely output-only.
                                 usage = getattr(output, "usage_metadata", None) or {}
-                                tokens = (
-                                    usage.get("output_tokens")
-                                    or usage.get("total_tokens")
-                                    or 0
-                                )
+                                tokens = usage.get("output_tokens") or 0
                                 if not tokens:
                                     meta = getattr(output, "response_metadata", None) or {}
                                     tokens = meta.get("eval_count", 0)
@@ -887,6 +897,24 @@ class TerminalUI:
                         self._history.clear()
                         self._msg_count     = 0
                         current_token_count = 0   # FIX-9
+                        # [FIX-RESET] Clearing local counters/history alone
+                        # did NOT reset anything the model sees: the
+                        # LangGraph checkpointer persists full conversation
+                        # state in SQLite keyed by thread_id (FIX-8: "pass
+                        # only the new message — checkpointer holds
+                        # history"), and this loop reused the same
+                        # thread_id for its whole lifetime (FIX-15 only
+                        # rotates it on a fresh launch). So the very next
+                        # message after a "reset" still resumed on top of
+                        # the complete pre-reset history loaded from disk —
+                        # "conversation reset" was cosmetic only. Rotate to
+                        # a brand-new thread_id instead, exactly like a
+                        # fresh launch — the old thread's rows are left
+                        # alone on disk (harmless) rather than deleted.
+                        # See web/commands.py's cmd_reset for the same fix
+                        # on the web side.
+                        _session_id = f"cli-{uuid.uuid4().hex[:12]}"
+                        config["configurable"]["thread_id"] = _session_id
                         console.print("  [dim]conversation reset[/dim]")
                         continue
 
