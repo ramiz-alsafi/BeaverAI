@@ -20,6 +20,7 @@ from memory.checkpointer import lifespan_checkpointer
 from skills import PERSONA_TOOLS
 from agent.bus import tui_bus
 from cli.hud import render_hud
+from cli.cli_text_render import display_text
 
 console = Console()
 
@@ -223,6 +224,17 @@ class TerminalUI:
             return t
 
         def _streaming_text(text: str, done: bool = False) -> Text:
+            # [FIX-ARABIC-WIRE] cli/cli_text_render.py's display_text() —
+            # Arabic reshaping + bidi reordering for correct terminal
+            # display — was fully implemented (and cli/text_render.py has
+            # an older, superseded copy of the same fix) but neither was
+            # ever imported or called anywhere in this file. Every Arabic
+            # response was rendered raw: disconnected letter forms in
+            # visually-reversed order, exactly the failure mode the
+            # module's own docstring warns about. display_text() no-ops
+            # instantly on non-Arabic text (a regex miss), so this is safe
+            # to call on every streaming tick.
+            text = display_text(text)
             t = Text(overflow="fold")
             if not done:
                 t.append("🦫 ", style="dim")
@@ -252,7 +264,10 @@ class TerminalUI:
             if preview:
                 t.append("\n")
                 lines = preview.splitlines()[:6]
-                t.append("\n".join(lines)[:600], style="dim white")
+                # [FIX-ARABIC-WIRE] Same fix as _streaming_text above — a
+                # file read or command output containing Arabic text was
+                # equally affected.
+                t.append(display_text("\n".join(lines)[:600]), style="dim white")
                 if len(preview.splitlines()) > 6 or len(preview) > 600:
                     t.append("\n…", style="dim")
             return t
@@ -734,12 +749,22 @@ class TerminalUI:
     def _cmd_hud(self, session_id: str = "cli") -> None:
         persona = _active_persona()
         tools   = PERSONA_TOOLS.get(persona, [])
+        # [FIX-HUD-DIR] focus_dir defaults to the literal string "unset" in
+        # render_hud() and was never passed here, so the HUD's "dir" field
+        # showed "unset" unconditionally — even though /dir (a separate
+        # command right next to this one) correctly reports the real,
+        # live workspace root via the exact same import. Lazy-imported
+        # (not a top-level import) to match /dir's own pattern and always
+        # reflect the current value after a /dir <path> change, not the
+        # value at process start.
+        from skills.file_ops import WORKSPACE_ROOT
         console.print()
         console.print(
             render_hud(
                 state="idle",
                 model=runtime_config.model,
                 mode=persona,
+                focus_dir=str(WORKSPACE_ROOT),
                 temp=runtime_config.temperature,
                 msg_count=self._msg_count,
                 estimated_tokens=current_token_count,
@@ -989,11 +1014,13 @@ class TerminalUI:
 
                     persona = _active_persona()
                     tools   = PERSONA_TOOLS.get(persona, [])
+                    from skills.file_ops import WORKSPACE_ROOT  # [FIX-HUD-DIR]
                     console.print(
                         render_hud(
                             state="idle",
                             model=runtime_config.model,
                             mode=persona,
+                            focus_dir=str(WORKSPACE_ROOT),
                             temp=runtime_config.temperature,
                             msg_count=self._msg_count,
                             estimated_tokens=current_token_count,
