@@ -21,6 +21,7 @@ import subprocess
 import shutil
 from pathlib import Path
 from langchain_core.tools import tool
+from skills.file_ops import get_active_workspace_root
 
 PERSONA  = ["coder", "researcher", "standard", "pentester", "orchestrator"]
 ENABLED  = True
@@ -28,6 +29,26 @@ ENABLED  = True
 _TIMEOUT    = 20   # seconds
 _MAX_LINES  = 80   # max output lines — prevents context flooding
 _MAX_FILES  = 100  # max files returned by find_files
+
+
+def _resolve_path(path: str) -> str:
+    """Resolve *path* against the active SESSION's workspace root, not the
+    raw OS process cwd.
+
+    [FIX-WORKSPACE] Same root cause as git_context.py's identical fix (see
+    its docstring for the full rationale, rooted in file_ops.py's FIX-6):
+    Path(path).resolve() resolves a relative path (including the "."
+    default every tool below used) against os.getcwd(), which the web
+    server never updates per-session on purpose. Every search_in_files /
+    find_files / count_lines call with a relative path was silently
+    ignoring /dir on the web server and always operating on wherever the
+    process happened to launch, the same directory for every concurrent
+    user regardless of their own workspace.
+    """
+    p = Path(path).expanduser()
+    if p.is_absolute():
+        return str(p.resolve())
+    return str((Path(get_active_workspace_root()) / p).resolve())
 
 
 def _run(args: list[str], cwd: str | None = None) -> tuple[int, str, str]:
@@ -66,7 +87,7 @@ def search_in_files(pattern: str, path: str = ".", file_glob: str = "",
     max_results    : cap on returned matches (default 50, max 200)
     """
     max_results = min(max(1, max_results), 200)
-    search_path = str(Path(path).expanduser().resolve())
+    search_path = _resolve_path(path)
 
     if _has("rg"):
         cmd = ["rg", "--line-number", "--no-heading", "--color=never",
@@ -131,7 +152,7 @@ def search_in_files(pattern: str, path: str = ".", file_glob: str = "",
         if len(py_matches) > _MAX_LINES:
             truncated = (
                 f"\n[... {len(py_matches) - _MAX_LINES} more lines — "
-                f"narrow your pattern or increase max_results ...]"
+                f"narrow your pattern to see the rest ...]"
             )
             py_matches = py_matches[:_MAX_LINES]
 
@@ -153,7 +174,15 @@ def search_in_files(pattern: str, path: str = ".", file_glob: str = "",
 
     truncated = ""
     if len(lines) > _MAX_LINES:
-        truncated = f"\n[... {len(lines) - _MAX_LINES} more lines — narrow your pattern or increase max_results ...]"
+        # [FIX-SEARCH-MSG] max_results maps to rg/grep's --max-count, which is
+        # a PER-FILE cap, not a global one — across many files, total matched
+        # lines routinely exceed max_results even when it's respected
+        # correctly, and this display truncation (_MAX_LINES) is a separate,
+        # fixed cap that doesn't change with max_results at all. The old
+        # message told the model to "increase max_results" to see more,
+        # which doesn't help (and can make the per-file match count, and so
+        # this truncation, worse) — dropped that suggestion.
+        truncated = f"\n[... {len(lines) - _MAX_LINES} more lines — narrow your pattern to see the rest ...]"
         lines = lines[:_MAX_LINES]
 
     header = f"Matches for '{pattern}' in {search_path}"
@@ -175,7 +204,7 @@ def find_files(name_pattern: str, path: str = ".", file_type: str = "any") -> st
     path         : root directory to search from (default: current directory)
     file_type    : "file", "dir", or "any" (default "any")
     """
-    search_path = str(Path(path).expanduser().resolve())
+    search_path = _resolve_path(path)
 
     if not _has("find"):
         # Windows fallback — use Python's pathlib
@@ -224,7 +253,7 @@ def count_lines(path: str) -> str:
     ----------
     path : path to a file or directory
     """
-    p = Path(path).expanduser().resolve()
+    p = Path(_resolve_path(path))
 
     if not p.exists():
         return f"[count_lines] Path does not exist: {path}"
