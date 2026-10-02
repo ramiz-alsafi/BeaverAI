@@ -71,6 +71,33 @@ def _ensure_plugins_package() -> bool:
     return True
 
 
+def _plugins_fingerprint() -> float:
+    """Return a value that changes whenever anything under plugins/ changes
+    — a file added, removed, OR edited in place.
+
+    [FIX-PLUGIN-RELOAD] load_plugin_tools() used to check only
+    _PLUGINS_DIR.stat().st_mtime. On every common filesystem (ext4, APFS,
+    NTFS), a directory's own mtime is bumped by a directory-ENTRY change
+    — a file being added or removed — but NOT by an existing file's
+    content being edited and saved, which only updates that file's own
+    mtime. Verified empirically (write a file, then overwrite its
+    content in place: directory mtime is bit-for-bit unchanged, file
+    mtime correctly updates). In practice this meant the hot-reload this
+    module advertises (see plugins/git_context.py's own docstring: "Drop
+    this file in plugins/ and restart Beaver (or it hot-reloads)") never
+    actually fired for the single most common plugin-development
+    workflow — editing an EXISTING plugin's code — only for adding or
+    deleting a whole file. Fixed by taking the max mtime across the
+    directory itself and every .py file inside it.
+    """
+    try:
+        mtimes = [_PLUGINS_DIR.stat().st_mtime]
+        mtimes.extend(p.stat().st_mtime for p in _PLUGINS_DIR.glob("*.py"))
+        return max(mtimes)
+    except OSError:
+        return 0.0
+
+
 def load_plugin_tools(persona: str) -> List[BaseTool]:
     """Return all tools from enabled plugins that target *persona*.
 
@@ -96,7 +123,7 @@ def load_plugin_tools(persona: str) -> List[BaseTool]:
     # (i.e. a file was added, removed, or modified).  Calling importlib.reload()
     # on every agent turn was 50–200 ms of wasted work and broke singletons
     # inside plugins.
-    current_mtime = _PLUGINS_DIR.stat().st_mtime if _PLUGINS_DIR.exists() else 0.0
+    current_mtime = _plugins_fingerprint() if _PLUGINS_DIR.exists() else 0.0
     if current_mtime != _plugins_mtime:
         _plugins_mtime = current_mtime
         _plugins_cache.clear()
