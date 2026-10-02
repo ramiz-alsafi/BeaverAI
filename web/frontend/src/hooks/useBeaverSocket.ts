@@ -20,6 +20,65 @@ function uid(): string {
   return Math.random().toString(36).slice(2, 10);
 }
 
+// [FIX-21-JS] Mirrors agent/graph.py's _lenient_json_loads fix: strict
+// JSON.parse() alone silently failed on two shapes small/quantised local
+// models commonly emit — single-quoted strings ({'thought': '...'}, which
+// the marker list right below already anticipated but never actually
+// parsed) and Python-literal True/False/None instead of true/false/null.
+// Lower stakes here than the Python-side fix (this only gates whether the
+// "thought" preview shows while streaming — the server already parses and
+// executes the actual tool call correctly regardless of this function's
+// result), but worth matching for consistency.
+//
+// Deliberately does NOT use eval()/Function() the way Python's
+// ast.literal_eval fallback does — this runs in the browser on raw model-
+// generated text, and evaluating untrusted text as code would be a real
+// XSS/RCE-in-browser risk if the model's output were ever influenced by a
+// prompt injection. Single-quote handling below is pure string
+// manipulation (swap unescaped `'` for `"` when not already inside a
+// double-quoted string) — safe, imperfect on pathological input, and
+// falls through to returning null exactly like before if it still doesn't
+// parse.
+function lenientJsonParse(chunk: string): unknown {
+  try {
+    return JSON.parse(chunk);
+  } catch {
+    // fall through
+  }
+
+  const normalized = chunk
+    .replace(/\bTrue\b/g, "true")
+    .replace(/\bFalse\b/g, "false")
+    .replace(/\bNone\b/g, "null");
+  try {
+    return JSON.parse(normalized);
+  } catch {
+    // fall through
+  }
+
+  let swapped = "";
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < normalized.length; i++) {
+    const c = normalized[i];
+    const prev = normalized[i - 1];
+    if (c === '"' && prev !== "\\" && !inSingle) {
+      inDouble = !inDouble;
+      swapped += c;
+    } else if (c === "'" && prev !== "\\" && !inDouble) {
+      inSingle = !inSingle;
+      swapped += '"';
+    } else {
+      swapped += c;
+    }
+  }
+  try {
+    return JSON.parse(swapped);
+  } catch {
+    return null;
+  }
+}
+
 // ── Thought extraction ──────────────────────────────────────────────────
 // Mirrors agent/graph.py's _extract_json_tool_call: find a
 // {"thought": "...", "tool": "...", "args": {...}} object anywhere in the
@@ -31,14 +90,26 @@ function extractThought(raw: string): string | null {
   const cleaned = raw.replace(/```json/g, "").replace(/```/g, "");
 
   let start = -1;
-  for (const marker of ['{"thought"', '{ "thought"', '{"tool"', '{ "tool"']) {
+  // [FIX-21-JS] Added the single-quote variants — this list never
+  // included them at all, so a single-quoted tool-call object's start
+  // position was never even found, let alone parsed (see
+  // lenientJsonParse above for the parsing half of this fix).
+  for (const marker of [
+    '{"thought"', '{ "thought"', "{'thought'",
+    '{"tool"', '{ "tool"', "{'tool'",
+  ]) {
     const i = cleaned.indexOf(marker);
     if (i !== -1 && (start === -1 || i < start)) start = i;
   }
   if (start === -1) return null;
 
   let depth = 0;
-  let inStr = false;
+  // [FIX-21-JS] Track WHICH quote char opened the current string (or
+  // null), not just a bool — the old bool-only version only toggled on
+  // '"', so a single-quoted string value containing a literal '{' or '}'
+  // could throw off brace depth counting for the single-quoted shape the
+  // marker list above now recognizes.
+  let inStr: '"' | "'" | null = null;
   let esc = false;
   for (let i = start; i < cleaned.length; i++) {
     const c = cleaned[i];
@@ -46,23 +117,19 @@ function extractThought(raw: string): string | null {
       esc = false;
     } else if (c === "\\" && inStr) {
       esc = true;
-    } else if (c === '"') {
-      inStr = !inStr;
     } else if (inStr) {
-      continue;
+      if (c === inStr) inStr = null;
+    } else if (c === '"' || c === "'") {
+      inStr = c;
     } else if (c === "{") {
       depth++;
     } else if (c === "}") {
       depth--;
       if (depth === 0) {
         const chunk = cleaned.slice(start, i + 1);
-        try {
-          const obj = JSON.parse(chunk);
-          const thought = obj && typeof obj.thought === "string" ? obj.thought.trim() : "";
-          return thought || null;
-        } catch {
-          return null;
-        }
+        const obj = lenientJsonParse(chunk) as { thought?: unknown } | null;
+        const thought = obj && typeof obj.thought === "string" ? obj.thought.trim() : "";
+        return thought || null;
       }
     }
   }
