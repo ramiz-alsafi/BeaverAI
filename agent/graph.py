@@ -589,13 +589,36 @@ def _load_tool_manual(name: str) -> Optional[str]:
     return doc
 
 
+_UTILITY_PREFIX_WRAPPERS = {"sudo", "doas"}
+
+
 def _extract_shell_utility(command: str) -> Optional[str]:
     """Best-effort extraction of the utility name from an os_exec command
     string, e.g. "nmap -sV 127.0.0.1" -> "nmap". [FIX-20]
+
+    [FIX-UTILITY-PREFIX] Skips a single leading sudo/doas wrapper so
+    "sudo nmap -sS target" still resolves to "nmap" (and injects
+    tool_manuals/nmap.md, which actually exists) instead of "sudo" (which
+    has no manual, so the correction was silently lost). sudo is a very
+    common prefix for exactly the commands this project's pentester
+    persona runs (SYN scans and the like genuinely need root). Doesn't
+    attempt to handle sudo's own flags (e.g. "sudo -u www-data nmap...")
+    — real argument parsing would be needed to do that correctly in
+    general, and this function is explicitly best-effort, not a full
+    shell parser.
     """
     if not command:
         return None
-    first = command.strip().split()[0] if command.strip() else ""
+    tokens = command.strip().split()
+    if not tokens:
+        return None
+
+    idx = 0
+    first_bare = tokens[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if first_bare in _UTILITY_PREFIX_WRAPPERS and len(tokens) > 1:
+        idx = 1
+
+    first = tokens[idx]
     # strip a leading path (e.g. /usr/bin/nmap -> nmap) and .exe suffix
     first = first.replace("\\", "/").rsplit("/", 1)[-1]
     for ext in (".exe", ".cmd", ".bat", ".ps1"):
