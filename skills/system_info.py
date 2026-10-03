@@ -8,9 +8,20 @@ Fixes applied:
 """
 import os
 import platform
+import re
 
 import psutil
 from langchain_core.tools import tool
+
+# [FIX-ENVVAR-URI] get_environment_vars()'s blocklist only ever checked the
+# VARIABLE NAME for suspicious substrings. That misses one of the most
+# common real-world credential leaks: a connection-string env var whose
+# NAME is innocuous (DATABASE_URL, REDIS_URL, MONGODB_URI, AMQP_URL,
+# SQLALCHEMY_DATABASE_URI — none of these contain PASSWORD/SECRET/KEY/
+# TOKEN/AUTH) but whose VALUE embeds a plaintext password directly in
+# standard URI auth syntax: scheme://user:password@host. Matches that
+# shape in the VALUE too, independent of what the variable is named.
+_URI_CREDENTIAL_RE = re.compile(r"://[^/\s:@]+:[^/\s@]+@")
 
 
 def _disk_root() -> str:
@@ -66,6 +77,10 @@ def get_environment_vars() -> str:
             f"{k}={v}"
             for k, v in os.environ.items()
             if not any(sub in k.upper() for sub in blocked)
+            # [FIX-ENVVAR-URI] ...and now also excluded if the VALUE itself
+            # embeds credentials in scheme://user:pass@host form, regardless
+            # of how innocuous the variable's name is.
+            and not _URI_CREDENTIAL_RE.search(v)
         ]
         return "\n".join(lines[:30])
     except Exception as e:
