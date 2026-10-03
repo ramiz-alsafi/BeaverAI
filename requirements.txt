@@ -32,6 +32,17 @@ python-dotenv~=1.0
 textual>=0.70,<1.0
 rich~=13.7
 
+# [FIX-REQS-BIDI] cli/cli_text_render.py's display_text() — Arabic
+# reshaping + bidi reordering so Arabic text renders correctly in the
+# terminal instead of as disconnected, visually-reversed letters — needs
+# both of these. They were missing from this file entirely: display_text()
+# degrades gracefully (logs a warning, returns text unreshaped) when
+# they're absent rather than crashing, so the gap was silent — a plain
+# `pip install -r requirements.txt` never actually installed the packages
+# the CLI's own Arabic-rendering code depends on.
+arabic-reshaper~=3.0
+python-bidi~=0.6
+
 # ── Web UI (third interface — fixes Arabic/RTL rendering CLI/TUI can't do) ────
 fastapi~=0.110
 uvicorn[standard]~=0.27
