@@ -139,8 +139,24 @@ export function Sidebar({
                             <button
                               type="button"
                               onClick={() => {
+                                // [FIX-SIDEBAR-RACE] sendCommand() just posts
+                                // the /delete frame over the WebSocket — the
+                                // server processes it async and replies with
+                                // its own command_result later. Calling
+                                // listSidebarSessions() in the very same
+                                // tick re-fetches before the delete has
+                                // actually happened server-side, so the
+                                // just-deleted session often still showed up
+                                // in the refreshed list. There's no request
+                                // id to correlate a specific command_result
+                                // back to this click (command_result is
+                                // generic, shared by every slash command),
+                                // so a short delay — not a real fix, but a
+                                // proportionate one — gives the round trip
+                                // time to land for the common case without
+                                // a bigger protocol change.
                                 sendCommand(`/delete ${row.thread_id}`);
-                                listSidebarSessions();
+                                window.setTimeout(listSidebarSessions, 300);
                               }}
                               className="rounded border border-goldDim px-1.5 py-0.5 text-[10.5px] hover:border-rust hover:text-rust"
                             >
@@ -221,8 +237,10 @@ export function Sidebar({
                           <button
                             type="button"
                             onClick={() => {
+                              // [FIX-SIDEBAR-RACE] Same race as the session
+                              // delete button above — see its comment.
                               sendCommand(`/forget ${row[2]}`);
-                              listMemories();
+                              window.setTimeout(() => listMemories(), 300);
                             }}
                             className="shrink-0 text-[10.5px] text-muted hover:text-rust"
                             title="Forget this memory"
