@@ -591,7 +591,18 @@ export function useBeaverSocket(url: string = defaultWsUrl()) {
       // required server-side — server.py accepts an empty/absent token
       // when BEAVER_WEB_TOKEN isn't configured, so this one line covers
       // both the local no-auth default and the token-protected case.
-      ws.send(JSON.stringify({ type: "auth", token: tokenRef.current }));
+      //
+      // [FIX-TYPES-AUTH] Was a raw ws.send(JSON.stringify(...)) call that
+      // bypassed the ClientFrame type entirely — the "auth" frame wasn't
+      // even declared in it (see types.ts). wsRef.current is already
+      // assigned to this exact `ws` instance by the time onopen fires
+      // (the assignment happens synchronously, above, before onopen is
+      // even attached), and its readyState is OPEN precisely when onopen
+      // fires, so sendFrame's isOpen() guard passes here exactly as it
+      // does for every other frame in this file — same helper, same
+      // type-checked path, no behavior change, just no longer a silent
+      // gap in the one frame every single connection sends first.
+      sendFrame({ type: "auth", token: tokenRef.current });
       setConnected(true);
       reconnectAttemptRef.current = 0; // reset backoff on a real successful connect
     };
