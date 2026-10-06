@@ -16,7 +16,7 @@ undefined at path".
 
 ## Correct call
 {"path": "."}
-{"path": "C:\\Users\\ramiz\\OneDrive\\Desktop\\beaver-3.0"}
+{"path": "C:\\Users\\yourname\\projects\\beaver"}
 
 ## If you don't know the path yet
 Call `get_workspace` first (no arguments) to get the current workspace root,
