@@ -89,11 +89,25 @@ def _get_session(session_id: str) -> httpx.Client:
     flood of session_ids from one busy engagement can no longer evict a
     completely different thread's sessions out from under it.
     """
-    key = f"{_current_thread_id()}::{session_id}"
+    prefix = f"{_current_thread_id()}::"
+    key = prefix + session_id
     if key not in _SESSIONS:
-        if len(_SESSIONS) >= _MAX_SESSIONS:
-            oldest_key = next(iter(_SESSIONS))
-            _SESSIONS.pop(oldest_key).close()
+        # [FIX-SESSION-EVICT] The namespacing fix above stops cookies from
+        # leaking across threads, but eviction was still counting and
+        # picking from the GLOBAL _SESSIONS dict (len(_SESSIONS), next(iter(
+        # _SESSIONS))) — so a busy engagement in one thread could still
+        # silently close a completely unrelated thread's active session
+        # purely because the TOTAL across every concurrent engagement
+        # crossed _MAX_SESSIONS, even if that other thread only had one or
+        # two sessions open itself. That's the same practical harm as the
+        # original cookie-leak bug this module already fixed, just via a
+        # different mechanism: a different user's authenticated session
+        # gets silently force-logged-out instead of leaked. Both the count
+        # check and the eviction target are now scoped to THIS thread's own
+        # sessions only, via the same prefix used for the key itself.
+        own_keys = [k for k in _SESSIONS if k.startswith(prefix)]
+        if len(own_keys) >= _MAX_SESSIONS:
+            _SESSIONS.pop(own_keys[0]).close()
         _SESSIONS[key] = httpx.Client(
             timeout=15.0, follow_redirects=True, headers={"User-Agent": _UA},
         )
