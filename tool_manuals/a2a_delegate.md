@@ -11,7 +11,7 @@ possibly a different model). Only for orchestrator-style workflows.
 | task       | string | yes      | A complete, self-contained instruction. The sub-agent has NO access to this conversation's history — include every fact it needs (file paths, exact goal, constraints) directly in this string. |
 
 ## Correct call
-a2a_delegate("coder", "Read C:/Users/ramiz/OneDrive/Desktop/beaver-3.0/main.py. The function parse_date() raises ValueError on ISO-8601 strings with timezone offsets. Fix it and run the test suite.")
+a2a_delegate("coder", "Read agent/parsing.py in the current workspace. The function parse_date() raises ValueError on ISO-8601 strings with timezone offsets. Fix it and run the test suite.")
 
 ## Known failure mode
 Calling a2a_delegate with a model string ("qwen2.5-coder:7b") instead of the
