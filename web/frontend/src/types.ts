@@ -213,6 +213,16 @@ export interface LogTailResult {
 // ── Client -> Server ─────────────────────────────────────────────────────
 
 export type ClientFrame =
+  // [FIX-TYPES-AUTH] Was missing entirely — useBeaverSocket.ts sends this
+  // as the WebSocket's mandatory first frame (see web/server.py's AUTH-1:
+  // every connection must send {"type": "auth", "token": "..."} before
+  // anything else, whether or not a token is actually configured) via a
+  // raw ws.send(JSON.stringify(...)) call that bypasses this type
+  // entirely, so the gap was silent rather than a compile error. This
+  // file's own header comment calls it "the single source of truth... for
+  // what the backend can send/receive" — it wasn't, for the one frame
+  // every single connection sends before anything else.
+  | { type: "auth"; token: string }
   | { type: "user_message"; content: string }
   | { type: "stop" }
   | { type: "get_config" }
