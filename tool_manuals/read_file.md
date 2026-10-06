@@ -12,7 +12,7 @@ a filename and call read_file on it hoping it exists.
 
 ## Correct call
 {"path": "config.py"}
-{"path": "C:/Users/ramiz/OneDrive/Desktop/beaver-3.0/requirements.txt"}
+{"path": "C:/Users/yourname/projects/beaver/requirements.txt"}
 
 ## Known failure mode
 If the file doesn't exist, the tool returns an error string — report that
