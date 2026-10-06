@@ -99,9 +99,7 @@ tool_manuals/ per-tool usage docs surfaced to the agent
 .venv/bin/pytest tests/unit/ -v
 ```
 
-CI (`.github/workflows/ci.yml`) runs this suite on every push across Python 3.11/3.12, plus `ruff` and `mypy`.
-
-> **Before your first push:** this repo doesn't currently ship a `tests/` directory, so `pytest tests/unit/` and the CI `test` job will fail with "no tests found" until you either add tests or adjust/remove that job.
+> **Note:** this repo doesn't currently ship a `tests/` directory or a CI workflow (no `.github/workflows/`) — `pytest tests/unit/` above will fail with "no tests found" until you add tests. If you want CI running this suite (plus `ruff`/`mypy`) across Python 3.11/3.12 on every push, you'll need to add a `.github/workflows/ci.yml` yourself; there isn't one here yet.
 
 ## License
 
