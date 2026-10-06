@@ -12,7 +12,7 @@ NOT for reading or writing files — use read_file/write_file/list_directory for
 | timeout | int    | no       | Max seconds before the process is killed. Defaults to 60 if omitted. |
 
 ## Correct call
-{"command": "dir C:\\Users\\ramiz", "timeout": 30}
+{"command": "whoami", "timeout": 30}
 
 ## Exit codes
 0 = success. Non-zero = failure. ALWAYS check which one you got before deciding
