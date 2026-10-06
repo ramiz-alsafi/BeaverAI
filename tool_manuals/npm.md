@@ -18,7 +18,7 @@ package-lock.json vs yarn.lock vs pnpm-lock.yaml before assuming).
 
 ## Windows-specific gotchas
 - **Path separators**: when a command NEEDS a path argument, use forward
-  slashes (`C:/Users/ramiz/project`) — npm and most Node tooling accept
+  slashes (`C:/Users/yourname/project`) — npm and most Node tooling accept
   these fine on Windows and it avoids PowerShell backslash-escaping issues.
 - **`npm.cmd` vs `npm`**: on Windows, npm resolves to `npm.cmd` under the
   hood, but you should still just write `npm ...` in the command — the
