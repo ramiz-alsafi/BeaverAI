@@ -66,7 +66,7 @@ All configuration lives in `.env` (gitignored — never commit your real one). `
 
 - **Model** — `MODEL_NAME`, `MODEL_PROVIDER`, `OLLAMA_BASE_URL`, `OLLAMA_NUM_CTX`
 - **Agent behavior** — `AGENT_MAX_LOOPS`, `AGENT_MAX_OUTPUT_CHARS`
-- **Web UI** — `BEAVER_WEB_TOKEN` (auth), `BEAVER_WEB_HOST`/`BEAVER_WEB_PORT`, `BEAVER_TLS_CERT`/`BEAVER_TLS_KEY`
+- **Web UI** — `BEAVER_WEB_TOKEN` (auth), `BEAVER_WEB_ORIGINS` (extra allowed page origins), `BEAVER_WEB_HOST`/`BEAVER_WEB_PORT`, `BEAVER_TLS_CERT`/`BEAVER_TLS_KEY`
 - **MCP servers** — `MCP_SERVERS` (JSON array of server configs). Several of these (filesystem, git, chroma, sqlite) take **absolute paths** to your machine as command args — update them to your own repo location after cloning; they won't work as-is on a different machine or OS.
 - **A2A sub-agents** — `A2A_AGENTS` (JSON array of `{name, persona, model}`), `A2A_TIMEOUT`, `A2A_MAX_CONCURRENT`
 - **Plugins** — e.g. `BEAVER_NOTES_DIR` for `structured_notes`
@@ -74,6 +74,7 @@ All configuration lives in `.env` (gitignored — never commit your real one). `
 ## Security notes
 
 - `BEAVER_WEB_TOKEN`, if set, gates the Web UI's WebSocket connection — the browser prompts for it once per session. Leave unset for pure localhost/solo use.
+- With no token set, the server only accepts WebSocket connections from loopback origins (and the Vite dev server). Binding to localhost isn't enough on its own: browsers don't apply CORS to WebSockets, so any page open in your own browser could otherwise reach `ws://127.0.0.1:8000/ws` and drive the agent. If you reach the UI via a LAN address or reverse proxy, add that origin to `BEAVER_WEB_ORIGINS`.
 - TLS is opt-in (`BEAVER_TLS_CERT` + `BEAVER_TLS_KEY`) and required the moment you bind `BEAVER_WEB_HOST` to anything other than localhost — otherwise the auth token travels in plaintext.
 - `.env` is gitignored. If a real `.env` was ever created, committed, screen-shared, or otherwise exposed before this repo went public, treat `BEAVER_WEB_TOKEN` (and any MCP-server credentials) as burned and rotate it.
 - `os_exec` and the filesystem MCP server give the agent real shell/file access on your machine. Treat personas and plugins that expose them the same way you'd treat any tool with local code-execution — don't point them at anything you wouldn't want an LLM poking at.
