@@ -618,6 +618,25 @@ export function useBeaverSocket(url: string = defaultWsUrl()) {
         setAuthError(true);
         return;
       }
+      // [ORIGIN-1] server.py closes with 4403 when no token is configured and
+      // this page's Origin isn't in its allowlist (see web/server.py). Like
+      // 4401, retrying can't fix it — the origin isn't going to change — so
+      // stop and say what to do, instead of "reconnecting…" forever.
+      if (event.code === 4403) {
+        dispatch({
+          type: "add",
+          entry: {
+            id: uid(),
+            kind: "error",
+            message:
+              `The server refused this connection: the page's origin (${location.origin}) ` +
+              "isn't allowed. Open the UI from http://127.0.0.1:8000 (or the Vite dev " +
+              "URL), or add this origin to BEAVER_WEB_ORIGINS in .env and restart. " +
+              "Reload the page to try again.",
+          },
+        });
+        return;
+      }
       const attempt = reconnectAttemptRef.current;
       const delay = Math.min(2000 * 2 ** attempt, 30000); // 2s, 4s, 8s, 16s, capped at 30s
       reconnectAttemptRef.current = attempt + 1;
