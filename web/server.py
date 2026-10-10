@@ -139,10 +139,11 @@ logger = logging.getLogger("beaver.web")
 # [AUTH-1] Shared-secret gate for the web UI. Unset by default so a plain
 # `python web/server.py` on localhost keeps working with zero setup — the
 # moment you plan to bind this to 0.0.0.0 or any real network, set
-# BEAVER_WEB_TOKEN in .env (see .env.example: `openssl rand -hex 32`) and
-# every page load / WebSocket connection must present it as ?token=...
-# The frontend (useBeaverSocket.ts) already forwards whatever token the
-# page itself was loaded with onto the WS URL — nothing else to wire up.
+# BEAVER_WEB_TOKEN in .env (see .env.example: `openssl rand -hex 32`).
+# Every WebSocket connection must then present it in its first message,
+# {"type": "auth", "token": "..."} — see websocket_endpoint below. (This
+# comment used to describe a ?token= query parameter; AUTH-1 moved the
+# token out of the URL so it can't leak into history or access logs.)
 _WEB_TOKEN = os.getenv("BEAVER_WEB_TOKEN", "").strip()
 
 
@@ -157,6 +158,62 @@ def _token_valid(candidate: Optional[str]) -> bool:
     if not _WEB_TOKEN:
         return True
     return hmac.compare_digest(candidate or "", _WEB_TOKEN)
+
+
+# [ORIGIN-1] Cross-site WebSocket hijacking guard.
+#
+# Browsers do not apply CORS or the same-origin policy to WebSockets: any
+# page you happen to have open (a compromised ad, a malicious link) can run
+# `new WebSocket("ws://127.0.0.1:8000/ws")` against a server on your own
+# machine, and the browser will happily connect. With BEAVER_WEB_TOKEN unset
+# — the zero-setup default — that page could then send chat messages and
+# drive an agent that has os_exec and file-write tools. "Bound to 127.0.0.1"
+# does not protect against this: the attacker's page runs in YOUR browser,
+# on YOUR machine. What it can't forge is the Origin header, which browsers
+# set themselves on every WebSocket handshake, so we check that.
+#
+# Allowed by default: this server's own loopback origins, plus the Vite dev
+# server's (the dev proxy forwards the browser's Origin unchanged). Add
+# anything else — a LAN hostname, a reverse proxy — via BEAVER_WEB_ORIGINS
+# (comma-separated, e.g. "https://beaver.example.com"). "*" disables the
+# check entirely.
+#
+# Not enforced when BEAVER_WEB_TOKEN is set: a hijacking page can't read the
+# token out of this origin's storage, so it can't authenticate anyway, and
+# enforcing here would only break legitimate LAN/proxy deployments.
+#
+# A missing Origin header is allowed: browsers always send one, so its
+# absence means a non-browser client (CLI tools, tests), which isn't what
+# this guards against and could set any Origin value it liked regardless.
+_LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "[::1]")
+_VITE_DEV_PORT = "5173"
+
+
+def _build_allowed_origins(port: str, extra: str = "") -> "set[str]":
+    origins: "set[str]" = set()
+    for host in _LOOPBACK_HOSTS:
+        for scheme, default_port in (("http", "80"), ("https", "443")):
+            for p in {port, _VITE_DEV_PORT}:
+                origins.add(f"{scheme}://{host}:{p}")
+                if p == default_port:           # browsers omit a default port
+                    origins.add(f"{scheme}://{host}")
+    for item in (extra or "").split(","):
+        item = item.strip().rstrip("/").lower()
+        if item:
+            origins.add(item)
+    return origins
+
+
+_ALLOWED_ORIGINS = _build_allowed_origins(
+    os.getenv("BEAVER_WEB_PORT", "8000").strip() or "8000",
+    os.getenv("BEAVER_WEB_ORIGINS", ""),
+)
+
+
+def _origin_allowed(origin: Optional[str]) -> bool:
+    if not origin:
+        return True
+    return "*" in _ALLOWED_ORIGINS or origin.strip().rstrip("/").lower() in _ALLOWED_ORIGINS
 
 
 _FRONTEND_DIR = Path(__file__).resolve().parent / "frontend"   # [VITE-1]
@@ -248,9 +305,24 @@ async def _startup() -> None:
             "[AUTH-1] Web token protection: DISABLED — BEAVER_WEB_TOKEN is not set "
             "(or loaded empty). Anyone who can reach this port has full access, "
             "including os_exec on coder/pentester/orchestrator personas. "
-            "Fine for 127.0.0.1-only use; set BEAVER_WEB_TOKEN in .env before "
-            "binding this to 0.0.0.0 or any real network."
+            "Set BEAVER_WEB_TOKEN in .env before binding this to 0.0.0.0 or "
+            "any real network."
         )
+        # [ORIGIN-1] Loopback-only is NOT enough on its own: a web page open
+        # in your own browser can still reach 127.0.0.1. The Origin check is
+        # what stops that, so say plainly whether it's active.
+        if "*" in _ALLOWED_ORIGINS:
+            print(
+                "[ORIGIN-1] WebSocket Origin check: DISABLED (BEAVER_WEB_ORIGINS "
+                "contains '*') — with no token set, any web page open in your "
+                "browser can drive this agent."
+            )
+        else:
+            print(
+                "[ORIGIN-1] WebSocket Origin check: ENABLED — only loopback and "
+                "BEAVER_WEB_ORIGINS origins can connect "
+                f"({len(_ALLOWED_ORIGINS)} allowed)."
+            )
 
     _attach_uvicorn_file_handler()  # [LOGS-1] additive — console logging untouched
 
@@ -971,6 +1043,22 @@ async def websocket_endpoint(ws: WebSocket) -> None:
     # unset, so one code path covers both the local no-auth default and
     # the token-protected case.
     await ws.accept()
+
+    # [ORIGIN-1] Checked BEFORE reading a single frame, so a rejected page
+    # never gets as far as the auth message. Accepted-then-closed (rather
+    # than rejected at the HTTP handshake) so the browser reports a real
+    # close code the frontend can act on; a handshake rejection reaches the
+    # page only as an opaque code 1006 and it would just retry forever.
+    origin = ws.headers.get("origin")
+    if not _WEB_TOKEN and not _origin_allowed(origin):
+        logger.warning(
+            "[ORIGIN-1] Rejected WebSocket from origin %r — not in the allowed set. "
+            "If this is a legitimate UI, add it to BEAVER_WEB_ORIGINS in .env.",
+            origin,
+        )
+        await ws.close(code=4403, reason="origin not allowed")
+        return
+
     try:
         raw = await asyncio.wait_for(ws.receive_text(), timeout=_WS_AUTH_TIMEOUT)
         first = json.loads(raw)
