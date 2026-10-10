@@ -95,11 +95,13 @@ tool_manuals/ per-tool usage docs surfaced to the agent
 ## Testing
 
 ```bash
-.venv/bin/pip install pytest pytest-asyncio
+.venv/bin/pip install pytest
 .venv/bin/pytest tests/unit/ -v
 ```
 
-> **Note:** this repo doesn't currently ship a `tests/` directory or a CI workflow (no `.github/workflows/`) — `pytest tests/unit/` above will fail with "no tests found" until you add tests. If you want CI running this suite (plus `ruff`/`mypy`) across Python 3.11/3.12 on every push, you'll need to add a `.github/workflows/ci.yml` yourself; there isn't one here yet.
+`tests/unit/` covers the pure logic and the cross-session isolation guarantees that are easy to break silently: tool-call JSON parsing, the pentester scope gate (driven through the real `execute_tools()`), provider auto-detection, per-session workspace/session isolation, plugin hot-reload detection, prompt caching, the slash-command table, and consistency checks over `.env.example` / `requirements.txt` / `tool_manuals/`. None of them need Ollama, a network connection, or an API key. (The two git tests skip themselves if `git` isn't installed.)
+
+> **Note:** there's no CI workflow yet (no `.github/workflows/`). If you want this suite — plus `ruff`/`mypy` — running on every push across Python 3.11/3.12, add a `.github/workflows/ci.yml` yourself.
 
 ## License
 
