@@ -3,7 +3,7 @@ import logging as _logging
 import random
 import time
 import uuid
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 from rich.align import Align
 from rich.console import Console, Group
