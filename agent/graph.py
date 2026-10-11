@@ -192,6 +192,7 @@ import contextvars
 import json
 import re
 import threading
+import time as _time
 import uuid as _uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -202,6 +203,7 @@ from langchain_core.runnables.config import merge_configs
 from langchain_core.tools import BaseTool
 from langgraph.graph import END, StateGraph
 
+from agent import audit
 from agent.config import runtime_config
 from agent.model_router import get_llm
 from agent.state import AgentState
@@ -1347,6 +1349,11 @@ async def execute_tools(
                     name=tool_name,
                 )
             )
+            # [AUDIT-1] Refused without running — still worth a record.
+            audit.record(
+                "tool_skipped", thread=tid, persona=active_persona, call_id=call_id,
+                tool=tool_name, args=tool_args, scope=scope, reason="repeat_failure",
+            )
             continue
 
 
@@ -1384,6 +1391,12 @@ async def execute_tools(
             scope_violation = target_value
 
         if scope_violation:
+            # [AUDIT-1] The record that matters most: what was refused, and
+            # the scope it was refused against.
+            audit.record(
+                "scope_block", thread=tid, persona=active_persona, call_id=call_id,
+                tool=tool_name, args=tool_args, scope=scope, violation=scope_violation,
+            )
             consecutive_failures += 1
             tool_outputs.append(
                 ToolMessage(
@@ -1398,8 +1411,13 @@ async def execute_tools(
             continue
 
         # ── Dispatch ───────────────────────────────────────────────────────────
+        _executed = False   # [AUDIT-1] True only once a tool is really about to run
         if tool_name not in tool_registry:
             result = f"Error: '{tool_name}' is not registered for persona '{active_persona}'."
+            audit.record(
+                "tool_skipped", thread=tid, persona=active_persona, call_id=call_id,
+                tool=tool_name, args=tool_args, scope=scope, reason="unregistered_tool",
+            )
         else:
             tool = tool_registry[tool_name]
 
@@ -1419,6 +1437,10 @@ async def execute_tools(
                 logger.warning(
                     "[ARG VALIDATION] Blocking dispatch to '%s' — %s",
                     tool_name, _validation_error,
+                )
+                audit.record(
+                    "tool_skipped", thread=tid, persona=active_persona, call_id=call_id,
+                    tool=tool_name, args=tool_args, scope=scope, reason="invalid_args",
                 )
                 failed_calls[_call_key] = failed_calls.get(_call_key, 0) + 1
                 consecutive_failures += 1
@@ -1440,6 +1462,28 @@ async def execute_tools(
             # for this dispatch) with Beaver's own tracer instead of
             # replacing it outright.
             tool_invoke_cfg: Dict[str, Any] = merge_configs(config, {"callbacks": callbacks})
+
+            # [AUDIT-1] Written BEFORE the tool runs, so a crash or hang
+            # mid-command still leaves proof it was attempted. In strict mode
+            # (BEAVER_AUDIT_STRICT=1) a tool that can't be recorded isn't run.
+            if not audit.record(
+                "tool_call", thread=tid, persona=active_persona, call_id=call_id,
+                tool=tool_name, args=tool_args, scope=scope,
+            ) and audit.strict():
+                tool_outputs.append(
+                    ToolMessage(
+                        content=(
+                            "[AUDIT FAILURE]: this call could not be written to the audit "
+                            "log, and BEAVER_AUDIT_STRICT is on, so it was NOT run. "
+                            "Tell the user; do not retry."
+                        ),
+                        tool_call_id=call_id,
+                        name=tool_name,
+                    )
+                )
+                continue
+            _executed = True
+            _t0 = _time.monotonic()
 
             if hasattr(tool, "astream_invoke"):
                 # [FIX-8] Streaming tools bypass LangChain's normal ainvoke() path,
@@ -1507,6 +1551,16 @@ async def execute_tools(
                 )
 
         result_str = str(result)
+
+        if _executed:
+            # [AUDIT-1] Outcome of the call recorded above (matched by call_id).
+            # Output itself is not stored by default — only its size and hash.
+            audit.record(
+                "tool_result", thread=tid, persona=active_persona, call_id=call_id,
+                tool=tool_name, ok=not _tool_result_failed(result_str),
+                duration_ms=int((_time.monotonic() - _t0) * 1000),
+                **audit.digest_output(result_str),
+            )
 
         # [FIX-19] On a detected failure, attach that tool's skill doc (if one
         # exists) as corrective guidance. No separate retry loop needed — the
