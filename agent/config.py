@@ -166,6 +166,28 @@ class RuntimeConfig:
         return (self.max_loops * 2) + 4
 
     # ── Scope ──────────────────────────────────────────────────────────────────
+    # [AUDIT-1] `scope` is a property so EVERY way of changing the authorised
+    # scope is recorded — set_scope() (CLI /scope, web /scope) but also the
+    # web Settings drawer, which does a bare setattr(cfg, "scope", ...) and
+    # would otherwise bypass any hook placed in set_scope(). Widening scope is
+    # the single most audit-relevant thing an operator can do. The first
+    # assignment (in __init__) isn't a change and isn't recorded.
+    @property
+    def scope(self) -> "list[str]":
+        return self._scope
+
+    @scope.setter
+    def scope(self, value: "list[str]") -> None:
+        old = self.__dict__.get("_scope")
+        self._scope = value
+        if old is None:
+            return
+        new = list(value) if isinstance(value, (list, tuple)) else [str(value)]
+        if list(old) != new:
+            from agent import audit  # lazy: keeps config import-light
+            audit.record("scope_change", persona=self.active_persona or "standard",
+                         old=list(old), new=new)
+
     def set_scope(self, raw_scope: "str | list[str]") -> None:
         """Update target scope. Accepts a comma-separated string or a list."""
         if isinstance(raw_scope, str):
