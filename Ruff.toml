@@ -1,0 +1,15 @@
+# Beaver — ruff configuration (used by CI and by `ruff check .` locally).
+#
+# Deliberately NARROW: only rules that flag code which is wrong or cannot run.
+# The full default rule set reports hundreds of style findings on the current
+# code base; turning those on is a separate clean-up, not a CI gate.
+#
+#   F821  undefined name        (a NameError waiting for the right code path)
+#   E9    syntax / IO errors    (includes files that are not valid UTF-8)
+#
+# To widen later, add e.g. "F401" (unused imports) or "F841" (unused variables)
+# after fixing the existing hits (`ruff check . --select F401,F841`).
+extend-exclude = ["web/frontend", "node_modules"]
+
+[lint]
+select = ["F821", "E9"]
