@@ -31,6 +31,9 @@ web/chroma_data/
 # ── Logs ─────────────────────────────────────────────────────────────────────
 *.log
 
+# ── Audit log (runtime evidence, never source) ────────────────────────────
+audit/
+
 # ── Notes (user content, not source) ────────────────────────────────────────
 notes/
 !notes/.gitkeep
