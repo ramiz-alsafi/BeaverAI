@@ -49,3 +49,21 @@ def workspace():
     original = file_ops._workspace_var.get()
     yield _set
     file_ops._workspace_var.set(original)
+
+
+@pytest.fixture(autouse=True)
+def isolated_audit_log(tmp_path, monkeypatch):
+    """Point the audit log at a per-test temp dir.
+
+    Many tests drive the real execute_tools(), which writes audit records. Without
+    this they'd land in <repo>/audit/ — polluting the working tree (and, one day,
+    a commit). Also resets the module's process-wide failure counter.
+    """
+    from agent import audit
+
+    monkeypatch.setenv("BEAVER_AUDIT_DIR", str(tmp_path / "audit"))
+    monkeypatch.delenv("BEAVER_AUDIT", raising=False)
+    monkeypatch.delenv("BEAVER_AUDIT_STRICT", raising=False)
+    monkeypatch.delenv("BEAVER_AUDIT_OUTPUT_CHARS", raising=False)
+    monkeypatch.setattr(audit, "_failures", 0)
+    return tmp_path / "audit"
