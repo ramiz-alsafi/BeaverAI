@@ -67,7 +67,7 @@ def _ensure_plugins_package() -> bool:
         _PLUGINS_DIR.mkdir(parents=True)
     init = _PLUGINS_DIR / "__init__.py"
     if not init.exists():
-        init.write_text("# Beaver plugin package — auto-generated\n")
+        init.write_text("# Beaver plugin package — auto-generated\n", encoding="utf-8")
     return True
 
 
