@@ -13,7 +13,7 @@ from rich.table import Table
 from rich.text import Text
 from langchain_core.messages import HumanMessage
 
-from agent.graph import create_beaver_graph, _evict_cached_llm
+from agent.graph import create_beaver_graph, _evict_cached_llm, active_thread_id_var
 from agent.config import runtime_config, PERSONAS_PROMPTS_DIR
 from agent.telemetry import get_callbacks
 from memory.checkpointer import lifespan_checkpointer
@@ -783,6 +783,9 @@ class TerminalUI:
         # FIX-15: unique thread_id per session so each launch starts fresh.
         # Resume a prior session with --thread <id> in main.py one-shot mode.
         _session_id = f"cli-{uuid.uuid4().hex[:12]}"
+        # [AUDIT-1] So a /scope change (made outside any graph turn) is attributed
+        # to this session in the audit log instead of the contextvar's "default".
+        active_thread_id_var.set(_session_id)
 
         async with lifespan_checkpointer() as checkpointer:
             self._graph = create_beaver_graph(checkpointer)
@@ -940,6 +943,7 @@ class TerminalUI:
                         # on the web side.
                         _session_id = f"cli-{uuid.uuid4().hex[:12]}"
                         config["configurable"]["thread_id"] = _session_id
+                        active_thread_id_var.set(_session_id)   # [AUDIT-1]
                         console.print("  [dim]conversation reset[/dim]")
                         continue
 
