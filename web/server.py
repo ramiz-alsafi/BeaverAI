@@ -324,6 +324,9 @@ async def _startup() -> None:
                 f"({len(_ALLOWED_ORIGINS)} allowed)."
             )
 
+    from agent import audit as _audit
+    print(_audit.status_line())     # [AUDIT-1] say plainly whether tool calls are being recorded
+
     _attach_uvicorn_file_handler()  # [LOGS-1] additive — console logging untouched
 
     _checkpointer = await _exit_stack.enter_async_context(lifespan_checkpointer())
@@ -1091,6 +1094,14 @@ async def websocket_endpoint(ws: WebSocket) -> None:
     session_cfg = RuntimeConfig()
     set_session_config(session_cfg)
 
+    # [AUDIT-1] Tag everything this connection does with ITS thread id from the
+    # start. execute_tools sets this itself for tool calls, but a scope change
+    # (Settings drawer, /scope) happens here, outside any turn — without this
+    # the audit record would carry the contextvar's fallback "default", which
+    # looks like a real id and says nothing about who changed the scope.
+    from agent.graph import active_thread_id_var
+    active_thread_id_var.set(session_id)
+
     # [STOP-1] Shared mutable state _run_turn reads/writes, and /continue
     # can swap session_id/config mid-connection.
     state: Dict[str, Any] = {
@@ -1265,6 +1276,7 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                 if result.get("switch_to_thread"):
                     state["session_id"] = result["switch_to_thread"]
                     state["config"] = {"configurable": {"thread_id": state["session_id"]}}
+                    active_thread_id_var.set(state["session_id"])   # [AUDIT-1]
 
                 # [FIX-RESET] See web/commands.py's cmd_reset docstring —
                 # the `session` dict passed into _dispatch_command above is
