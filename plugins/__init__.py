@@ -1,1 +1,1 @@
-# Beaver plugin package — auto-generated
+# Beaver plugin package â€” auto-generated
