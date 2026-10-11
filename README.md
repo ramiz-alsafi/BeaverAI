@@ -70,6 +70,16 @@ All configuration lives in `.env` (gitignored — never commit your real one). `
 - **MCP servers** — `MCP_SERVERS` (JSON array of server configs). Several of these (filesystem, git, chroma, sqlite) take **absolute paths** to your machine as command args — update them to your own repo location after cloning; they won't work as-is on a different machine or OS.
 - **A2A sub-agents** — `A2A_AGENTS` (JSON array of `{name, persona, model}`), `A2A_TIMEOUT`, `A2A_MAX_CONCURRENT`
 - **Plugins** — e.g. `BEAVER_NOTES_DIR` for `structured_notes`
+- **Audit log** — `BEAVER_AUDIT`, `BEAVER_AUDIT_DIR`, `BEAVER_AUDIT_STRICT`, `BEAVER_AUDIT_OUTPUT_CHARS` (see below)
+
+## Audit log
+
+Every tool call, scope block and scope change is appended to `audit/audit-YYYY-MM-DD.jsonl` (one JSON object per line, gitignored, mode `0600`, on by default). It records what ran, with which arguments, under which authorised scope, in which thread and persona — and when. The call is written **before** the tool runs, so a crash mid-command still leaves proof it was attempted.
+
+- **Secrets are redacted before they reach disk** (passwords, tokens, URI credentials, cookies, `curl -u user:pass`); file-write bodies are stored as length + SHA-256 only, and tool **output** isn't stored at all unless you opt in with `BEAVER_AUDIT_OUTPUT_CHARS`. Redaction is best-effort pattern matching, not a guarantee.
+- **Scope changes are recorded however they're made** — `/scope` in the CLI or web UI, or the Settings drawer.
+- Each record carries the hash of the one before it. `python -m agent.audit verify` reports an edited, removed, inserted or reordered record, and prints the chain's **head hash**. Nothing in the file vouches for its *newest* record, so write that hash down somewhere off the machine (an engagement report, a ticket) and compare it later — otherwise editing only the last line, or truncating the end, goes unnoticed. This is a tripwire, not a notary: someone with write access can rewrite the whole file. Copy the files somewhere append-only if you need more.
+- `BEAVER_AUDIT_STRICT=1` makes Beaver refuse to run a tool whose record can't be written; by default it logs an error and carries on.
 
 ## Security notes
 
