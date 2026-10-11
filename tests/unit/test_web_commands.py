@@ -31,7 +31,7 @@ def test_every_command_advertised_in_help_is_implemented():
 
 
 def test_every_command_in_the_frontend_palette_is_implemented():
-    palette = (ROOT / "web/frontend/src/components/CommandPalette.tsx").read_text()
+    palette = (ROOT / "web/frontend/src/components/CommandPalette.tsx").read_text(encoding="utf-8")
     in_palette = set(re.findall(r'["\'`]/(\w+)', palette))
     assert in_palette, "could not parse any commands out of CommandPalette.tsx"
     assert in_palette <= set(COMMANDS), in_palette - set(COMMANDS)
