@@ -1,0 +1,8 @@
+# Beaver — development / CI-only Python dependencies
+#
+# Install (on top of the runtime deps):
+#   pip install -r requirements.txt -r requirements-dev.txt
+#
+# Kept separate from requirements.txt so a plain `make install` for someone
+# who only wants to RUN Beaver doesn't pull in test tooling.
+pytest>=8.0,<10
