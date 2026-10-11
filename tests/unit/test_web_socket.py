@@ -146,5 +146,5 @@ def test_with_a_token_set_a_foreign_origin_is_not_blocked_but_still_needs_the_to
 # ── documentation ───────────────────────────────────────────────────────────
 
 def test_env_example_documents_beaver_web_origins():
-    text = (ROOT / ".env.example").read_text()
+    text = (ROOT / ".env.example").read_text(encoding="utf-8")
     assert re.search(r"^#?BEAVER_WEB_ORIGINS=", text, re.M)
