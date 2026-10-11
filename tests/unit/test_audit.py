@@ -674,11 +674,11 @@ def test_the_slash_scope_command_is_attributed_too(monkeypatch, isolated_audit_l
 
 @pytest.mark.parametrize("var", ["BEAVER_AUDIT", "BEAVER_AUDIT_DIR", "BEAVER_AUDIT_STRICT", "BEAVER_AUDIT_OUTPUT_CHARS"])
 def test_env_example_documents_every_audit_setting(var):
-    assert re.search(rf"^#?{var}=", (ROOT / ".env.example").read_text(), re.M), var
+    assert re.search(rf"^#?{var}=", (ROOT / ".env.example").read_text(encoding="utf-8"), re.M), var
 
 
 def test_audit_files_are_gitignored():
-    assert any(line.strip() in ("audit/", "/audit/", "audit") for line in (ROOT / ".gitignore").read_text().splitlines())
+    assert any(line.strip() in ("audit/", "/audit/", "audit") for line in (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines())
 
 
 def test_status_line_says_plainly_whether_it_is_on(monkeypatch):
