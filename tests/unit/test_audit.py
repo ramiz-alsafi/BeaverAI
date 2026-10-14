@@ -208,7 +208,7 @@ def test_disabled_writes_nothing_and_reports_success(monkeypatch, isolated_audit
 
 def test_a_broken_log_never_raises_and_reports_failure(monkeypatch, tmp_path):
     blocker = tmp_path / "a_file"
-    blocker.write_text("not a directory")
+    blocker.write_text("not a directory", encoding="utf-8")
     monkeypatch.setenv("BEAVER_AUDIT_DIR", str(blocker / "sub"))   # mkdir must fail
     assert audit.record("tool_call", call_id="c", tool="x") is False   # and not raise
 
@@ -241,7 +241,7 @@ def lines_of(f):
 
 
 def save(f, lines):
-    f.write_text("\n".join(lines), encoding="utf-8")
+    f.write_text("\n".join(lines), encoding="utf-8", newline="\n")   # no platform newline translation
 
 
 def change(lines, idx, old, new):
@@ -305,7 +305,7 @@ def test_garbage_and_blank_lines_are_flagged(chain):
 
 
 def test_missing_trailing_newline_is_flagged_as_possible_truncation(chain):
-    chain.write_text(chain.read_text(encoding="utf-8").rstrip("\n"), encoding="utf-8")
+    chain.write_text(chain.read_text(encoding="utf-8").rstrip("\n"), encoding="utf-8", newline="\n")
     assert any("truncated" in p for p in audit.verify(chain).problems)
 
 
@@ -364,6 +364,51 @@ def test_each_process_in_a_shared_file_gets_its_own_head(monkeypatch, isolated_a
     (f,) = audit_files(isolated_audit_log)
     heads = audit.verify(f).heads
     assert set(heads) == {"aaaaaaaa", "bbbbbbbb"} and all(seq == 2 for seq, _ in heads.values())
+
+
+# ── Windows: line endings ───────────────────────────────────────────────────
+
+def test_the_file_is_opened_in_binary_mode_when_the_platform_has_that_flag(monkeypatch, isolated_audit_log):
+    """On Windows os.open() makes TEXT-mode descriptors unless O_BINARY is passed, and
+    os.write() then turns every \\n into \\r\\n — so the bytes on disk stop matching the
+    hashes in the chain and `verify` calls every untouched log tampered. POSIX has no
+    O_BINARY; fake it here and check we ask for it."""
+    fake_flag = 0x8000
+    seen = []
+    real_open = os.open
+
+    def spy(path, flags, mode=0o777, **kw):
+        seen.append(flags)
+        return real_open(path, flags & ~fake_flag, mode, **kw)
+
+    monkeypatch.setattr(os, "O_BINARY", fake_flag, raising=False)
+    monkeypatch.setattr(os, "open", spy)
+    assert audit.record("tool_call", thread="t", persona="p", call_id="c", tool="x")
+    assert seen and all(f & fake_flag for f in seen), seen
+
+
+def test_a_crlf_converted_log_still_verifies(chain):
+    """git autocrlf, an editor, or a copy through Windows can rewrite line endings;
+    that is not tampering, and must not read as tampering."""
+    before = audit.verify(chain)
+    chain.write_bytes(chain.read_bytes().replace(b"\n", b"\r\n"))
+    after = audit.verify(chain)
+    assert after.ok and after.records == before.records, after.problems
+    assert after.heads == before.heads          # same hashes: an operator's noted head still matches
+
+
+def test_a_content_edit_is_still_caught_under_crlf(chain):
+    ls = lines_of(chain)
+    change(ls, 1, '"tool": "x"', '"tool": "rm"')
+    chain.write_bytes("\r\n".join(ls).encode("utf-8"))
+    rep = audit.verify(chain)
+    assert not rep.ok and len(rep.problems) == 1, rep.problems
+
+
+def test_mixed_line_endings_are_tolerated(chain):
+    parts = chain.read_bytes().split(b"\n")
+    chain.write_bytes(b"\r\n".join(parts[:3]) + b"\n" + b"\n".join(parts[3:]))
+    assert audit.verify(chain).ok
 
 
 # ── CLI ─────────────────────────────────────────────────────────────────────
@@ -553,7 +598,7 @@ def test_every_record_from_a_real_run_verifies(monkeypatch, isolated_audit_log):
 
 def test_best_effort_by_default_a_broken_log_does_not_stop_the_tool(monkeypatch, tmp_path):
     blocker = tmp_path / "f"
-    blocker.write_text("x")
+    blocker.write_text("x", encoding="utf-8")
     monkeypatch.setenv("BEAVER_AUDIT_DIR", str(blocker / "sub"))
     out = run(monkeypatch, [("os_exec", {"command": "whoami"})], persona="coder")
     assert out == [REACHED] and REACHED_LOG == [("os_exec", "whoami")]
@@ -561,7 +606,7 @@ def test_best_effort_by_default_a_broken_log_does_not_stop_the_tool(monkeypatch,
 
 def test_strict_mode_refuses_to_run_a_tool_it_cannot_record(monkeypatch, tmp_path):
     blocker = tmp_path / "f"
-    blocker.write_text("x")
+    blocker.write_text("x", encoding="utf-8")
     monkeypatch.setenv("BEAVER_AUDIT_DIR", str(blocker / "sub"))
     monkeypatch.setenv("BEAVER_AUDIT_STRICT", "1")
     out = run(monkeypatch, [("os_exec", {"command": "whoami"})], persona="coder")
