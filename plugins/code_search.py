@@ -17,6 +17,7 @@ Tools
   count_lines      — line/word/char count for a file or directory summary
 """
 
+import os
 import subprocess
 import shutil
 from pathlib import Path
@@ -54,7 +55,7 @@ def _resolve_path(path: str) -> str:
 def _run(args: list[str], cwd: str | None = None) -> tuple[int, str, str]:
     try:
         r = subprocess.run(
-            args, capture_output=True, text=True,
+            args, capture_output=True, encoding="utf-8", errors="replace",
             timeout=_TIMEOUT, cwd=cwd,
         )
         return r.returncode, r.stdout, r.stderr
@@ -66,7 +67,20 @@ def _run(args: list[str], cwd: str | None = None) -> tuple[int, str, str]:
         return -1, "", str(exc)
 
 
+# [FIX-WIN-TOOLS] On native Windows these three names are either absent or, for
+# `find`, a DIFFERENT PROGRAM: C:\Windows\System32\find.exe is a text-search
+# utility that is always on PATH and fails on `find <dir> -name <pattern>`.
+# shutil.which("find") therefore said "yes", find_files ran Windows' find.exe,
+# and the tool returned an error instead of using the pure-Python fallback that
+# was written for exactly this case. Never trust these on Windows — the fallbacks
+# give the same results. (rg is a real cross-platform binary, so it's still used.)
+_IS_WINDOWS = os.name == "nt"
+_POSIX_ONLY_TOOLS = frozenset({"find", "grep", "wc"})
+
+
 def _has(binary: str) -> bool:
+    if _IS_WINDOWS and binary in _POSIX_ONLY_TOOLS:
+        return False
     return shutil.which(binary) is not None
 
 
@@ -124,11 +138,16 @@ def search_in_files(pattern: str, path: str = ".", file_glob: str = "",
             for root, dirs, files in _os.walk(search_path):
                 dirs[:] = [d for d in dirs if not d.startswith(".")]
                 for filename in files:
+                    # [FIX-WIN-TOOLS] the inner `break` below only leaves the LINE
+                    # loop, so later files in the same directory kept adding
+                    # matches and the result overshot max_results.
+                    if len(py_matches) >= max_results:
+                        break
                     if file_glob and not Path(filename).match(file_glob):
                         continue
                     filepath = Path(root) / filename
                     try:
-                        text = filepath.read_text(errors="replace")
+                        text = filepath.read_text(errors="replace", encoding="utf-8")
                         for lineno, line in enumerate(text.splitlines(), 1):
                             if compiled.search(line):
                                 try:
@@ -210,7 +229,14 @@ def find_files(name_pattern: str, path: str = ".", file_type: str = "any") -> st
         # Windows fallback — use Python's pathlib
         try:
             p = Path(search_path)
-            matches = list(p.rglob(name_pattern))[:_MAX_FILES]
+            # [FIX-WIN-TOOLS] honour file_type like the real `find -type` does;
+            # this branch used to ignore it, so file_type="dir" returned files.
+            matches = sorted(
+                m for m in p.rglob(name_pattern)
+                if file_type == "any"
+                or (file_type == "file" and m.is_file())
+                or (file_type == "dir" and m.is_dir())
+            )[:_MAX_FILES]
             if not matches:
                 return f"[find_files] No files matching '{name_pattern}' in {search_path}"
             return f"Files matching '{name_pattern}' in {search_path}:\n\n" + \
@@ -262,7 +288,7 @@ def count_lines(path: str) -> str:
         if not _has("wc"):
             # Python fallback
             try:
-                text = p.read_text(errors="replace")
+                text = p.read_text(errors="replace", encoding="utf-8")
                 lines = text.count("\n")
                 words = len(text.split())
                 chars = len(text)
@@ -288,7 +314,7 @@ def count_lines(path: str) -> str:
                 ext_stats[ext] = [0, 0]
             ext_stats[ext][0] += 1
             try:
-                ext_stats[ext][1] += f.read_text(errors="replace").count("\n")
+                ext_stats[ext][1] += f.read_text(errors="replace", encoding="utf-8").count("\n")
             except Exception:
                 pass
     except PermissionError as exc:
