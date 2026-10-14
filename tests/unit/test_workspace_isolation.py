@@ -29,8 +29,8 @@ def test_resolve_path_leaves_absolute_paths_alone(tmp_path, workspace):
 def test_find_files_sees_only_its_own_sessions_directory(tmp_path, workspace):
     s1, s2 = tmp_path / "s1", tmp_path / "s2"
     s1.mkdir(); s2.mkdir()
-    (s1 / "only_in_session1.txt").write_text("x")
-    (s2 / "only_in_session2.txt").write_text("y")
+    (s1 / "only_in_session1.txt").write_text("x", encoding="utf-8")
+    (s2 / "only_in_session2.txt").write_text("y", encoding="utf-8")
     # Assert on the full resolved PATH, not just the filename: the tool's
     # "No files matching '<pattern>'" message echoes the pattern, so a bare
     # filename check would pass even when the search ran in the wrong place.
@@ -47,7 +47,7 @@ def test_find_files_sees_only_its_own_sessions_directory(tmp_path, workspace):
 
 
 def test_count_lines_resolves_relative_to_the_workspace(tmp_path, workspace):
-    (tmp_path / "f.txt").write_text("a\nb\nc\n")
+    (tmp_path / "f.txt").write_text("a\nb\nc\n", encoding="utf-8")
     workspace(str(tmp_path))
     assert "3" in count_lines.func("f.txt")
 
@@ -57,7 +57,7 @@ def _init_repo(path, message):
     git("init", "-q")
     git("config", "user.email", "t@example.com")
     git("config", "user.name", "tester")
-    (path / "f.txt").write_text(message)
+    (path / "f.txt").write_text(message, encoding="utf-8")
     git("add", ".")
     git("commit", "-q", "-m", message)
 
