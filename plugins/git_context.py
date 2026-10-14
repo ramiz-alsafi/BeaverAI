@@ -53,7 +53,7 @@ def _run(args: list[str], cwd: str | None = None) -> tuple[int, str, str]:
         result = subprocess.run(
             ["git"] + args,
             capture_output=True,
-            text=True,
+            encoding="utf-8", errors="replace",
             timeout=_TIMEOUT,
             cwd=cwd,
         )
