@@ -247,7 +247,14 @@ def _current_thread() -> str:
 def _write_all(path: Path, data: bytes) -> None:
     # One os.write per record on an O_APPEND descriptor: concurrent appenders
     # (another Beaver process) can't interleave inside a line.
-    fd = os.open(str(path), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+    #
+    # O_BINARY matters on Windows: os.open() there creates TEXT-mode descriptors
+    # unless it's passed, and os.write() on one silently turns every "\n" into
+    # "\r\n". Each record's hash is computed over the LF-terminated bytes, so
+    # without this the file on disk no longer matches its own chain and
+    # `verify` reports every untouched log as tampered. (Absent on POSIX: 0.)
+    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_BINARY", 0)
+    fd = os.open(str(path), flags, 0o600)
     try:
         view = memoryview(data)
         while view:
@@ -343,6 +350,14 @@ def verify(path: "str | Path") -> VerifyReport:
         report.problems.append("file does not end with a newline — last record may be truncated")
 
     for n, line in enumerate(lines, 1):
+        # Tolerate CRLF: git's autocrlf, an editor, or a copy through Windows
+        # can convert line endings, and that isn't tampering. Hashes are over
+        # the record's bytes WITHOUT its terminator, so dropping a trailing
+        # "\r" makes a converted file verify exactly like the original — while
+        # any change to the record's content still breaks the chain.
+        # (A compact-JSON record can't itself end in a raw CR: it's escaped.)
+        if line.endswith(b"\r"):
+            line = line[:-1]
         if not line.strip():
             report.problems.append(f"line {n}: blank line")
             continue
