@@ -4,8 +4,10 @@
 # on Linux. Bugs that only exist on one of them (e.g. text-encoding defaults,
 # path separators) are invisible to the other, so every push exercises both.
 #
-# Nothing here needs Ollama, a GPU, Node, or network access to a model: the
-# unit tests use fakes. (Frontend build/tests are not part of this workflow.)
+# Nothing here needs Ollama, a GPU, or network access to a model: the unit
+# tests use fakes. The frontend job type-checks and builds web/frontend (that
+# is all it does -- there are no frontend tests), so a TypeScript error can no
+# longer slip onto main unnoticed.
 name: CI
 
 on:
@@ -24,7 +26,7 @@ concurrency:
 jobs:
   lint:
     name: lint (ruff)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
@@ -32,7 +34,8 @@ jobs:
         with:
           python-version: "3.12"
       # Pinned so a new ruff release can't turn main red by itself.
-      # Rules live in ruff.toml (undefined names + syntax/IO errors only).
+      # Rules live in ruff.toml (undefined names, syntax/IO errors, unused
+      # imports/variables, redefinitions).
       - run: python -m pip install ruff==0.17.0
       - run: ruff check .
 
@@ -43,7 +46,10 @@ jobs:
     strategy:
       fail-fast: false          # a Windows failure must not hide a Linux result (or vice versa)
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        # ubuntu-24.04 rather than ubuntu-latest: the latest label migrates to
+        # Ubuntu 26 on 2026-10-19 and a runner image change shouldn't be able
+        # to turn main red by itself. Bump deliberately.
+        os: [ubuntu-24.04, windows-latest]
         python-version: ["3.11", "3.12"]   # README: "Python 3.11+"
     steps:
       - uses: actions/checkout@v4
@@ -60,3 +66,21 @@ jobs:
           python -m pip install -r requirements.txt -r requirements-dev.txt
       - name: Run unit tests
         run: python -m pytest tests/unit -v
+
+  frontend:
+    name: frontend (tsc + vite build)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: web/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/frontend/package-lock.json
+      - run: npm ci
+      # package.json's "build" is `tsc -b && vite build`: type errors fail it.
+      - run: npm run build
