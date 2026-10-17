@@ -8,8 +8,6 @@ these tests simulate the Windows default instead of relying on the host OS.
 """
 from pathlib import Path
 
-import pytest
-
 ROOT = Path(__file__).resolve().parent.parent.parent
 
 _SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", "dist", ".mypy_cache", ".ruff_cache", ".pytest_cache"}
