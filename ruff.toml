@@ -12,4 +12,4 @@
 extend-exclude = ["web/frontend", "node_modules"]
 
 [lint]
-select = ["F821", "E9"]
+select = ["F821", "E9", "F401", "F841", "F811"]
