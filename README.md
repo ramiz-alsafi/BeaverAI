@@ -112,8 +112,6 @@ tool_manuals/ per-tool usage docs surfaced to the agent
 
 `tests/unit/` covers the pure logic and the cross-session isolation guarantees that are easy to break silently: tool-call JSON parsing, the pentester scope gate (driven through the real `execute_tools()`), provider auto-detection, per-session workspace/session isolation, plugin hot-reload detection, prompt caching, the slash-command table, and consistency checks over `.env.example` / `requirements.txt` / `tool_manuals/`. None of them need Ollama, a network connection, or an API key. (The two git tests skip themselves if `git` isn't installed.)
 
-> **Note:** there's no CI workflow yet (no `.github/workflows/`). If you want this suite — plus `ruff`/`mypy` — running on every push across Python 3.11/3.12, add a `.github/workflows/ci.yml` yourself.
-
 ## License
 
 MIT — see [LICENSE](LICENSE).
