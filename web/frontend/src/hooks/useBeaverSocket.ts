@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import type {
   ActiveToolsResult,
+  ApprovalDecision,
+  ApprovalRequestInfo,
   ChatEntry,
   ClientFrame,
   CommandResult,
@@ -239,6 +241,8 @@ export function useBeaverSocket(url: string = defaultWsUrl()) {
   }, [token]);
   const [log, dispatch] = useReducer(logReducer, [] as LogEntry[]);
   const [turnInProgress, setTurnInProgress] = useState(false);
+  // [APPROVAL-1] The tool call the agent is currently waiting on a human for.
+  const [pendingApproval, setPendingApproval] = useState<ApprovalRequestInfo | null>(null);
   const [tokenUsage, setTokenUsage] = useState<{ count: number; limit: number }>({ count: 0, limit: 0 });
   const [status, setStatus] = useState<StatusUpdate | null>(null);
   const statusRef = useRef<StatusUpdate | null>(null);
@@ -405,6 +409,7 @@ export function useBeaverSocket(url: string = defaultWsUrl()) {
             break;
           }
           setTurnInProgress(false);
+          setPendingApproval(null);
           const id = pendingIdRef.current;
           if (id) {
             if (!firstTokenReceivedRef.current) {
@@ -465,11 +470,20 @@ export function useBeaverSocket(url: string = defaultWsUrl()) {
         case "error":
           dispatch({ type: "add", entry: { id: uid(), kind: "error", message: frame.message } });
           setTurnInProgress(false);
+          setPendingApproval(null);
           break;
 
         case "done":
           setTurnInProgress(false);
+          setPendingApproval(null);
           break;
+
+        // [APPROVAL-1] The turn is paused until respondApproval() answers.
+        case "approval_request": {
+          const { type: _t, ...info } = frame;
+          setPendingApproval(info);
+          break;
+        }
 
         case "command_result": {
           const { type: _t, switch_to_thread, replay_messages, ...rest } = frame;
@@ -609,6 +623,7 @@ export function useBeaverSocket(url: string = defaultWsUrl()) {
 
     ws.onclose = (event) => {
       setConnected(false);
+      setPendingApproval(null); // [APPROVAL-1] server treats a closed tab as "deny"
       wsRef.current = null;
       // [AUTH-1] server.py closes with 4401 when BEAVER_WEB_TOKEN is set and
       // the connection didn't present a valid one. Retrying won't help — the
@@ -698,6 +713,16 @@ export function useBeaverSocket(url: string = defaultWsUrl()) {
       wsRef.current!.send(JSON.stringify(frame));
     },
     [isOpen]
+  );
+
+  /** [APPROVAL-1] Answer the pending approval_request. Clears it locally right
+   * away; the server treats anything but allow/allow_session as "deny". */
+  const respondApproval = useCallback(
+    (id: string, decision: ApprovalDecision) => {
+      sendFrame({ type: "approval_response", id, decision });
+      setPendingApproval(null);
+    },
+    [sendFrame]
   );
 
   /** Composer submit — types a message OR a slash command, shows a "user"
@@ -794,6 +819,8 @@ export function useBeaverSocket(url: string = defaultWsUrl()) {
     setToken,
     log,
     turnInProgress,
+    pendingApproval,
+    respondApproval,
     tokenUsage,
     status,
     send,
