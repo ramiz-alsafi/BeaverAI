@@ -39,8 +39,6 @@ def workspace():
     """Set the per-session workspace contextvar for one test, then restore it."""
     from skills import file_ops
 
-    tokens = []
-
     def _set(path: str) -> str:
         resolved = file_ops.set_session_workspace(path)
         return resolved
@@ -67,3 +65,16 @@ def isolated_audit_log(tmp_path, monkeypatch):
     monkeypatch.delenv("BEAVER_AUDIT_OUTPUT_CHARS", raising=False)
     monkeypatch.setattr(audit, "_failures", 0)
     return tmp_path / "audit"
+
+
+@pytest.fixture(autouse=True)
+def approval_off_by_default(monkeypatch):
+    """Most tests drive execute_tools() with stand-in tools and expect them to
+    run. The approval gate (agent/approval.py) fails closed when no human
+    handler is registered, so turn it off for them. tests/unit/test_approval.py
+    sets BEAVER_APPROVAL itself to exercise the real gate."""
+    monkeypatch.setenv("BEAVER_APPROVAL", "off")
+    yield
+    from agent import approval
+
+    approval.set_default_handler(None)
