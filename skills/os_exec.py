@@ -53,6 +53,17 @@ Fix log
         asyncio.Lock (FIX-1) — commands from unrelated sessions queued
         behind each other, and cancel_active_process()/the STOP button in
         one tab could kill another tab's in-flight command.
+
+[FIX-27] Resource limits. The model picks `timeout`, and `if timeout:` treated
+        0 as "no limit", so a runaway command could run forever; and every
+        line of stdout/stderr was buffered in memory with no cap, so
+        `yes` or `cat /dev/urandom | base64` could eat all RAM before any
+        timeout fired. Now: the timeout is clamped to 1..BEAVER_EXEC_MAX_TIMEOUT
+        seconds (default 600; 0/negative/None fall back to the 60 s default),
+        and captured output is capped at BEAVER_EXEC_MAX_OUTPUT bytes per
+        stream (default 1,000,000). Past the cap the stream is still drained
+        (so the child never blocks on a full pipe) but discarded, and a single
+        notice is appended.
 """
 import asyncio
 import contextvars
@@ -65,11 +76,47 @@ from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
 
 
+# ── Limits (FIX-27) ────────────────────────────────────────────────────────────
+DEFAULT_TIMEOUT = 60
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def max_timeout() -> int:
+    """Hard ceiling on one command's runtime, in seconds (read at call time)."""
+    return _env_int("BEAVER_EXEC_MAX_TIMEOUT", 600)
+
+
+def max_output_bytes() -> int:
+    """Per-stream cap on captured output, in bytes (read at call time)."""
+    return _env_int("BEAVER_EXEC_MAX_OUTPUT", 1_000_000)
+
+
+def clamp_timeout(timeout: Optional[int]) -> int:
+    """Always return a finite timeout in 1..max_timeout() seconds.
+
+    None / 0 / negative / garbage -> DEFAULT_TIMEOUT (never "unlimited").
+    """
+    try:
+        value = int(timeout) if timeout is not None else DEFAULT_TIMEOUT
+    except (TypeError, ValueError):
+        value = DEFAULT_TIMEOUT
+    if value <= 0:
+        value = DEFAULT_TIMEOUT
+    return min(value, max_timeout())
+
+
 # ── Input schema ───────────────────────────────────────────────────────────────
 
 class OsExecInput(BaseModel):
     command: str = Field(..., description="The shell command to run (e.g. 'whoami', 'nmap 127.0.0.1').")
-    timeout: int = Field(60, description="Max execution time in seconds. Defaults to 60.")
+    timeout: int = Field(60, description="Max execution time in seconds. Defaults to 60; capped at BEAVER_EXEC_MAX_TIMEOUT (600).")
 
 
 # ── Process runner ─────────────────────────────────────────────────────────────
@@ -103,6 +150,8 @@ class AsyncProcessRunner:
         self._cancelled = False
         stdout_lines: list[str] = []
         stderr_lines: list[str] = []
+        timeout = clamp_timeout(timeout)            # FIX-27: never unlimited
+        output_cap = max_output_bytes()             # FIX-27
 
         # Unix: start_new_session=True creates a new process group so the
         # entire subprocess tree can be killed with os.killpg (FIX-2).
@@ -127,10 +176,32 @@ class AsyncProcessRunner:
             stream_name: str,
             storage: list[str],
         ) -> None:
+            kept = 0
+            truncated = False
             while True:
-                line_bytes = await stream.readline()
+                try:
+                    line_bytes = await stream.readline()
+                except ValueError:
+                    # A single line longer than the StreamReader limit (64 KiB).
+                    # Previously this escaped the gather() and crashed the tool
+                    # call. Drop the over-long chunk, count it against the cap,
+                    # and keep draining.
+                    kept += 65536
+                    if not truncated:
+                        storage.append(f"[!] {stream_name}: over-long line dropped\n")
+                    continue
                 if not line_bytes:
                     break
+                if truncated:
+                    continue                      # drain, don't store (FIX-27)
+                kept += len(line_bytes)
+                if kept > output_cap:
+                    truncated = True
+                    notice = f"\n[!] {stream_name} truncated at {output_cap} bytes.\n"
+                    storage.append(notice)
+                    if output_callback:
+                        output_callback(notice, stream_name)
+                    continue
                 line = line_bytes.decode("utf-8", errors="replace")
                 storage.append(line)
                 if output_callback:
@@ -143,10 +214,7 @@ class AsyncProcessRunner:
                 _read_stream(self._current_process.stderr, "stderr", stderr_lines),
             )
 
-            if timeout:
-                await asyncio.wait_for(read_tasks, timeout=timeout)
-            else:
-                await read_tasks
+            await asyncio.wait_for(read_tasks, timeout=timeout)
 
             await self._current_process.wait()
             exit_code = self._current_process.returncode or 0
