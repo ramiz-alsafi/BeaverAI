@@ -56,6 +56,8 @@ Client -> Server:
     {"type": "watch_log", "which": "agent"|"traces"|"uvicorn"}  start live-following that file — pushes
                                                                  log_line frames as new lines land (LOGS-1)
     {"type": "unwatch_log", "which": "agent"|"traces"|"uvicorn"} stop following it (LOGS-1)
+    {"type": "approval_response", "id": "...", "decision": "allow"|"allow_session"|"deny"}
+                                                                 answer to an approval_request (APPROVAL-1)
 
 Server -> Client:
     {"type": "gen_start"}                                    new generation begins
@@ -95,6 +97,13 @@ Server -> Client:
                                                                 reply to tail_log (LOGS-1)
     {"type": "log_line", "which": "...", "line": "..."}         one new line from a watch_log follower
                                                                 (LOGS-1)
+    {"type": "approval_request", "id": "...", "tool": "...", "summary": "...", "reason": "...",
+     "persona": "..."}                                          the agent wants to run a gated tool (shell
+                                                                command, file write, ...) and is waiting for
+                                                                the browser to answer with approval_response.
+                                                                No answer in BEAVER_APPROVAL_TIMEOUT seconds,
+                                                                a stop, or a disconnect all count as "deny".
+                                                                (APPROVAL-1, see agent/approval.py)
 """
 import asyncio
 import hmac
@@ -122,6 +131,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
+from agent import approval
 from agent.config import (
     runtime_config,
     RuntimeConfig,
@@ -1094,6 +1104,33 @@ async def websocket_endpoint(ws: WebSocket) -> None:
     session_cfg = RuntimeConfig()
     set_session_config(session_cfg)
 
+    # [APPROVAL-1] Human-in-the-loop for shell commands / file writes. The
+    # handler is registered in THIS context, before any turn task is created,
+    # so every turn (and any A2A sub-agent it spawns, which hops back onto
+    # this loop) asks THIS browser tab. A turn that is cancelled, a closed tab
+    # or a timeout all resolve to "deny" — nothing here can turn into an
+    # implicit "yes". See agent/approval.py.
+    pending_approvals: Dict[str, "asyncio.Future[str]"] = {}
+
+    async def _ask_browser(req: approval.ApprovalRequest) -> str:
+        approval_id = uuid.uuid4().hex[:12]
+        fut: "asyncio.Future[str]" = asyncio.get_running_loop().create_future()
+        pending_approvals[approval_id] = fut
+        try:
+            await ws.send_text(json.dumps({
+                "type": "approval_request",
+                "id": approval_id,
+                "tool": req.tool,
+                "summary": req.summary,
+                "reason": req.reason,
+                "persona": req.persona,
+            }))
+            return await fut
+        finally:
+            pending_approvals.pop(approval_id, None)
+
+    approval.set_handler(_ask_browser)
+
     # [AUDIT-1] Tag everything this connection does with ITS thread id from the
     # start. execute_tools sets this itself for tool calls, but a scope change
     # (Settings drawer, /scope) happens here, outside any turn — without this
@@ -1137,6 +1174,16 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                 continue
 
             mtype = msg.get("type")
+
+            # [APPROVAL-1] The browser's answer to an approval_request.
+            if mtype == "approval_response":
+                fut = pending_approvals.get(str(msg.get("id", "")))
+                if fut is not None and not fut.done():
+                    decision = str(msg.get("decision", "deny"))
+                    fut.set_result(
+                        decision if decision in (approval.ALLOW, approval.ALLOW_SESSION) else approval.DENY
+                    )
+                continue
 
             # [STOP-1] Explicit stop button.
             if mtype == "stop":
@@ -1306,6 +1353,9 @@ async def websocket_endpoint(ws: WebSocket) -> None:
             current_turn_task = asyncio.create_task(_run_turn(ws, user_input, state))
 
     except WebSocketDisconnect:
+        for fut in list(pending_approvals.values()):  # [APPROVAL-1] closed tab == "no"
+            if not fut.done():
+                fut.set_result(approval.DENY)
         if current_turn_task is not None and not current_turn_task.done():
             current_turn_task.cancel()
         for t in log_watch_tasks.values():  # [LOGS-1]
