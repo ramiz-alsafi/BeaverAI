@@ -15,7 +15,9 @@ What is recorded (one line each)
     tool_result   how it ended: ok/failed, duration, size + SHA-256 of output.
     scope_block   the scope gate refused it (it never ran).
     tool_skipped  it never ran for another reason (repeat failure, bad
-                  arguments, tool not registered for the persona).
+                  arguments, tool not registered for the persona, or the
+                  approval gate refused it: reason "approval_user_denied",
+                  "approval_timeout", "approval_no_approver", ...).
     scope_change  the authorised scope was edited (old -> new).
 
 Every record carries the scope in effect, the thread id and the persona, so
