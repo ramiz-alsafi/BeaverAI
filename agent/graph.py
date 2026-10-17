@@ -203,14 +203,14 @@ from langchain_core.runnables.config import merge_configs
 from langchain_core.tools import BaseTool
 from langgraph.graph import END, StateGraph
 
-from agent import audit
+from agent import approval, audit
 from agent.config import runtime_config
 from agent.model_router import get_llm
 from agent.state import AgentState
 from agent.telemetry import get_callbacks, logger
 from agent.tools import is_in_scope, is_target_in_scope
 from memory.compactor import compact_messages
-from skills import get_persona_tools, get_persona_tools_async
+from skills import get_persona_tools_async
 from agent.bus import tui_bus
 
 
@@ -946,7 +946,6 @@ async def call_model(
     config: Optional[RunnableConfig] = None,  # FIX-3
 ) -> Dict[str, Any]:
     iteration = state.get("iteration", 0)
-    tid = _thread_id(config)
     active_cfg = _get_active_config()
 
     # ── Hard stop ──────────────────────────────────────────────────────────────
@@ -1450,6 +1449,35 @@ async def execute_tools(
                             f"Error: {_validation_error}\n\n"
                             f"Correct call shape:\n{_json_call_example(tool)}"
                         ),
+                        tool_call_id=call_id,
+                        name=tool_name,
+                    )
+                )
+                continue
+
+            # ── Approval gate ─────────────────────────────────────────────────
+            # Shell commands, file writes and MCP mutators need a human "yes"
+            # (or must be on the read-only allowlist) — see agent/approval.py.
+            # Runs AFTER arg validation (don't ask a human about a call that
+            # can't run anyway) and BEFORE the tool_call audit record and the
+            # dispatch, so a refused call never reaches the tool. The refusal
+            # itself is audited as tool_skipped.
+            _verdict = await approval.check(
+                tool_name, tool_args, thread=tid, persona=active_persona,
+            )
+            if not _verdict.allowed:
+                audit.record(
+                    "tool_skipped", thread=tid, persona=active_persona, call_id=call_id,
+                    tool=tool_name, args=tool_args, scope=scope,
+                    reason=f"approval_{_verdict.reason}",
+                )
+                # Count it like a failure so an identical retry is blocked by
+                # the repeat-fail gate instead of asking the human again.
+                failed_calls[_call_key] = failed_calls.get(_call_key, 0) + 1
+                consecutive_failures += 1
+                tool_outputs.append(
+                    ToolMessage(
+                        content=_verdict.message,
                         tool_call_id=call_id,
                         name=tool_name,
                     )
