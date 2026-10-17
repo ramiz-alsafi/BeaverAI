@@ -124,6 +124,25 @@ def _resolve(path: str) -> str:
     return os.path.realpath(os.path.join(root, path))
 
 
+def _is_within(resolved: str, root: str) -> bool:
+    """True if *resolved* is *root* or lives underneath it.
+
+    [FIX-7] The old check was `resolved.startswith(root + os.sep)`, which breaks
+    in two ways: when root is a filesystem/drive root ("/" or "C:\\") the
+    separator doubles up ("//", "C:\\\\") so every legitimate path was rejected,
+    and on Windows the comparison was case-sensitive, so "c:\\Users\\me" and
+    "C:\\Users\\me" looked like different trees. commonpath() understands
+    separators, and normcase() makes the comparison OS-correct. A different
+    drive makes commonpath() raise ValueError, which is just "not within".
+    """
+    try:
+        a = os.path.normcase(os.path.abspath(resolved))
+        b = os.path.normcase(os.path.abspath(root))
+        return os.path.commonpath([a, b]) == b
+    except ValueError:
+        return False
+
+
 def _safe_path(path: str) -> str:
     """Resolve *path* and assert it stays within the active workspace root.
 
@@ -132,7 +151,7 @@ def _safe_path(path: str) -> str:
     """
     root = get_active_workspace_root()
     resolved = _resolve(path)
-    if not resolved.startswith(root + os.sep) and resolved != root:
+    if not _is_within(resolved, root):
         raise PermissionError(
             f"Path '{path}' resolves to '{resolved}' which is outside the "
             f"workspace root '{root}'. "
@@ -191,7 +210,7 @@ def write_file(path: str, content: str) -> str:
         _safe_path(parent)           # FIX-1: check parent dir is in-scope
         safe = os.path.realpath(raw_target)
         # Verify the full path too (realpath before the file exists)
-        if not safe.startswith(root + os.sep) and safe != root:
+        if not _is_within(safe, root):
             raise PermissionError(
                 f"Path '{path}' resolves outside workspace root '{root}'."
             )
