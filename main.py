@@ -54,6 +54,7 @@ from typing import List, Optional
 
 from langchain_core.messages import HumanMessage
 
+from agent import approval
 from agent.config import runtime_config
 from agent.graph import create_beaver_graph
 from agent.state import default_state
@@ -104,19 +105,27 @@ async def run(
                 user_input=prompt,
             )
 
-    async for event in graph.astream(state, config=config):
-        for node_name, state_update in event.items():
-            msgs = state_update.get("messages", [])
-            if not msgs:
-                continue
-            latest = msgs[-1]
-            if hasattr(latest, "tool_calls") and latest.tool_calls:
-                for tc in latest.tool_calls:
-                    print(f"[{node_name}] TOOL  -> {tc['name']}")
-                    print(f"           ARGS  -> {tc['args']}")
-            elif latest.content:
-                print(f"[{node_name}] {latest.content}")
-            print("-" * 60)
+    # [APPROVAL-1] Shell commands / file writes need a human "yes" (see
+    # agent/approval.py). One-shot runs ask on the terminal when there is one;
+    # with no TTY (cron, pipes, CI) the answer is "no", so an unattended run
+    # can only use read-only tools. Opt out with BEAVER_APPROVAL=off.
+    approval_token = approval.set_handler(approval.make_terminal_handler())
+    try:
+        async for event in graph.astream(state, config=config):
+            for node_name, state_update in event.items():
+                msgs = state_update.get("messages", [])
+                if not msgs:
+                    continue
+                latest = msgs[-1]
+                if hasattr(latest, "tool_calls") and latest.tool_calls:
+                    for tc in latest.tool_calls:
+                        print(f"[{node_name}] TOOL  -> {tc['name']}")
+                        print(f"           ARGS  -> {tc['args']}")
+                elif latest.content:
+                    print(f"[{node_name}] {latest.content}")
+                print("-" * 60)
+    finally:
+        approval.reset_handler(approval_token)
 
 
 def _parse_args() -> dict:
