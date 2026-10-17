@@ -3,9 +3,8 @@ import logging as _logging
 import random
 import time
 import uuid
-from typing import Any, List, Optional
+from typing import Any, List
 
-from rich.align import Align
 from rich.console import Console, Group
 from rich.live import Live
 from rich.panel import Panel
@@ -13,6 +12,7 @@ from rich.table import Table
 from rich.text import Text
 from langchain_core.messages import HumanMessage
 
+from agent import approval
 from agent.graph import create_beaver_graph, _evict_cached_llm, active_thread_id_var
 from agent.config import runtime_config, PERSONAS_PROMPTS_DIR
 from agent.telemetry import get_callbacks
@@ -356,6 +356,31 @@ class TerminalUI:
         ticker_stop = asyncio.Event()
         live_ref: List[Live] = []
 
+        # ── [APPROVAL-1] Human-in-the-loop for shell commands / file writes ────
+        # The Live region owns the screen while a turn runs, so the question
+        # can't just be print()ed into it. Step the Live aside (transient=True
+        # for that one stop() makes Rich erase its frozen frame instead of
+        # leaving a duplicate in the scrollback), ask on stdin, then redraw.
+        # Registered per turn and removed in the outer `finally` below. If this
+        # prompt ever fails, agent/approval.py treats that as "deny".
+        def _pause_live() -> None:
+            if live_ref:
+                live_ref[0].transient = True
+                live_ref[0].stop()
+                live_ref[0].transient = False
+
+        def _resume_live() -> None:
+            if live_ref:
+                live_ref[0].start(refresh=True)
+
+        _approval_token = approval.set_handler(
+            approval.make_terminal_handler(
+                _pause_live,
+                _resume_live,
+                out=lambda text: console.print(text, markup=False, highlight=False),
+            )
+        )
+
         async def _ticker():
             nonlocal frame_idx
             while not ticker_stop.is_set():
@@ -494,6 +519,10 @@ class TerminalUI:
                     live.update(_render_panel())
 
         finally:
+            try:
+                approval.reset_handler(_approval_token)   # [APPROVAL-1]
+            except ValueError:
+                pass
             self._animating = False
             _restore_stream_handlers(_saved)
             self._flush_buffer()
@@ -654,7 +683,7 @@ class TerminalUI:
                       active persona so server / .env changes take effect
                       without restarting Beaver.
         """
-        from skills.mcp_loader import list_mcp_servers, _release_mcp_connections, _cached_persona
+        from skills.mcp_loader import list_mcp_servers, _release_mcp_connections
 
         if reload:
             console.print("\n  [dim]reloading MCP connections…[/dim]")
@@ -1013,7 +1042,6 @@ class TerminalUI:
                             "[dim](Ctrl+C) — back to prompt[/dim]\n"
                         )
                         continue
-                    last_msg = result["messages"][-1]
                     self._history = list(result["messages"])
 
                     persona = _active_persona()
