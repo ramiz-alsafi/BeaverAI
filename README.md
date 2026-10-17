@@ -87,7 +87,9 @@ Every tool call, scope block and scope change is appended to `audit/audit-YYYY-M
 - With no token set, the server only accepts WebSocket connections from loopback origins (and the Vite dev server). Binding to localhost isn't enough on its own: browsers don't apply CORS to WebSockets, so any page open in your own browser could otherwise reach `ws://127.0.0.1:8000/ws` and drive the agent. If you reach the UI via a LAN address or reverse proxy, add that origin to `BEAVER_WEB_ORIGINS`.
 - TLS is opt-in (`BEAVER_TLS_CERT` + `BEAVER_TLS_KEY`) and required the moment you bind `BEAVER_WEB_HOST` to anything other than localhost — otherwise the auth token travels in plaintext.
 - `.env` is gitignored. If a real `.env` was ever created, committed, screen-shared, or otherwise exposed before this repo went public, treat `BEAVER_WEB_TOKEN` (and any MCP-server credentials) as burned and rotate it.
-- `os_exec` and the filesystem MCP server give the agent real shell/file access on your machine. Treat personas and plugins that expose them the same way you'd treat any tool with local code-execution — don't point them at anything you wouldn't want an LLM poking at.
+- **Tool approval.** Shell commands, file writes and MCP tools that write/edit/move/delete/execute need your explicit "yes" before they run (a popup in the Web UI, a prompt in the CLI), except a short read-only allowlist such as `whoami` or `git status`. Unattended runs with no one to ask are refused rather than allowed. This matters because Beaver reads untrusted web pages and files, and text hidden in them can try to steer the model. Tune it with `BEAVER_APPROVAL` (`ask` | `deny` | `off`) — see `.env.example`. It is a speed bump in front of a human, not a sandbox: an approved command runs with your full privileges, and `os_exec` is not confined to the workspace the way the file tools are.
+- `os_exec` timeouts are clamped (default 60 s, ceiling `BEAVER_EXEC_MAX_TIMEOUT`) and captured output is capped (`BEAVER_EXEC_MAX_OUTPUT`).
+- `os_exec` and the filesystem MCP server give the agent real shell/file access on your machine. Treat personas and plugins that expose them the same way you'd treat any tool with local code-execution — don't point them at anything you wouldn't want an LLM poking at. For real isolation, run Beaver in a container or VM.
 
 ## Project structure
 
@@ -106,7 +108,7 @@ tool_manuals/ per-tool usage docs surfaced to the agent
 ## Testing
 
 ```bash
-.venv/bin/pip install pytest
+.venv/bin/pip install -r requirements-dev.txt
 .venv/bin/pytest tests/unit/ -v
 ```
 
