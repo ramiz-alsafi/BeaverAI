@@ -210,6 +210,22 @@ export interface LogTailResult {
   size?: number;
 }
 
+// ── Tool approval — [APPROVAL-1] ──────────────────────────────────────────
+// The agent wants to run a gated tool (shell command, file write, ...) and
+// waits for the browser's answer. See agent/approval.py and web/server.py.
+
+export type ApprovalDecision = "allow" | "allow_session" | "deny";
+
+export interface ApprovalRequestInfo {
+  id: string;
+  tool: string;
+  /** what the call does, already trimmed server-side (never file bodies) */
+  summary: string;
+  /** short why-this-needs-approval, e.g. "runs a shell command" */
+  reason: string;
+  persona?: string;
+}
+
 // ── Client -> Server ─────────────────────────────────────────────────────
 
 export type ClientFrame =
@@ -238,7 +254,8 @@ export type ClientFrame =
   | { type: "list_sessions" }
   | { type: "tail_log"; which: LogWhich; lines?: number }
   | { type: "watch_log"; which: LogWhich }
-  | { type: "unwatch_log"; which: LogWhich };
+  | { type: "unwatch_log"; which: LogWhich }
+  | { type: "approval_response"; id: string; decision: ApprovalDecision };
 
 // ── Server -> Client ─────────────────────────────────────────────────────
 
@@ -271,4 +288,5 @@ export type ServerFrame =
   | ({ type: "memories_list" } & MemoriesResult)
   | ({ type: "sessions_list" } & SessionsResult)
   | ({ type: "log_tail"; which: LogWhich } & LogTailResult)
-  | { type: "log_line"; which: LogWhich; line: string };
+  | { type: "log_line"; which: LogWhich; line: string }
+  | ({ type: "approval_request" } & ApprovalRequestInfo);
