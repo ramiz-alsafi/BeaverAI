@@ -1,0 +1,114 @@
+# Beaver Compatibility - "does it work on the machines people actually use?"
+#
+# ci.yml answers "is the code correct?" (lint + unit tests on Linux/Windows).
+# This workflow answers "does Beaver install and START on other environments?":
+#
+#   native : Ubuntu, Windows, macOS x Python 3.11 / 3.13
+#            install deps -> unit tests -> build the web UI -> smoke test
+#   kali   : Kali Linux rolling (container), using Kali's OWN system Python
+#            and the documented `make install` path -> unit tests -> smoke test
+#
+# The smoke test (scripts/smoke_test.py) imports every module and boots the real
+# web server. It needs no Ollama, no GPU and no model: same constraints as ci.yml.
+#
+# Also runs weekly (and on demand) because requirements.txt uses version ranges:
+# a dependency release can break Beaver without any commit to this repo.
+name: Compatibility
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"   # Mondays 06:00 UTC
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compat-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    name: ${{ matrix.os }} / py${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false      # one broken OS must not hide the others
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        # ci.yml already covers 3.11 and 3.12 on Linux/Windows; this adds the
+        # newest Python (what a fresh install gets today) and macOS.
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Unit tests
+        run: python -m pytest tests/unit -v
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/frontend/package-lock.json
+
+      - name: Build web UI
+        working-directory: web/frontend
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: Smoke test (imports + web server, with UI)
+        run: python scripts/smoke_test.py --frontend
+
+  kali:
+    name: kali-rolling / system python
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container:
+      image: kalilinux/kali-rolling
+    steps:
+      # Kali's image is minimal; git is needed before checkout.
+      - name: Install system packages
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            python3 python3-venv python3-pip git make ca-certificates build-essential
+
+      - uses: actions/checkout@v4
+
+      - name: Show environment
+        run: |
+          head -n 3 /etc/os-release
+          python3 --version
+
+      # Same steps the README tells a user to run. (Kali's Python is
+      # "externally managed", so a venv is mandatory - make install makes one.)
+      - name: make install
+        run: make install
+
+      - name: Install test tooling
+        run: .venv/bin/pip3 install -r requirements-dev.txt
+
+      - name: Unit tests
+        run: .venv/bin/python3 -m pytest tests/unit -v
+
+      # No Node on this image on purpose: the UI build is covered by the native
+      # jobs. Here we prove the Python side runs on Kali (expects HTTP 200/503).
+      - name: Smoke test (imports + web server)
+        run: .venv/bin/python3 scripts/smoke_test.py
