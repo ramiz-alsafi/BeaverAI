@@ -47,13 +47,12 @@ def _pick_best_title(query: str) -> str | None:
             # data[1] is the list of title suggestions
             titles = data[1] if len(data) > 1 else []
             return titles[0] if titles else None
-    except Exception as exc:
+    except Exception:
         return None
 
 
 def _get_summary(title: str) -> dict:
     """Call the Wikipedia REST summary endpoint for a canonical title."""
-    url = _WIKI_SEARCH_URL.format(httpx.URL(title).path or title)
     # The REST endpoint wants the title URL-encoded in the path
     encoded = str(httpx.URL("https://en.wikipedia.org/api/rest_v1/page/summary/" + title.replace(" ", "_")))
     with httpx.Client(timeout=_TIMEOUT, headers={"User-Agent": _UA}, follow_redirects=True) as client:
