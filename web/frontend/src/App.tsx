@@ -1,6 +1,7 @@
 import { lazy, Suspense, useState } from "react";
 import { motion } from "framer-motion";
 import { ChatLog } from "./components/ChatLog";
+import { ApprovalModal } from "./components/ApprovalModal";
 import { Composer } from "./components/Composer";
 import { Sidebar } from "./components/Sidebar";
 import { StatusBanner } from "./components/StatusBanner";
@@ -22,6 +23,7 @@ const ActivityPanel = lazy(() =>
 export default function App() {
   const {
     connected, authError, setToken, log, turnInProgress, tokenUsage, status,
+    pendingApproval, respondApproval,
     send, sendCommand, stop,
     config, configUpdateResult, getConfig, updateConfig,
     personas, personaAddResult, listPersonas, addPersona,
@@ -219,6 +221,9 @@ export default function App() {
           />
         </Suspense>
       </div>
+
+      {/* [APPROVAL-1] Blocks the agent until answered — see agent/approval.py. */}
+      <ApprovalModal request={pendingApproval} onRespond={respondApproval} />
     </div>
   );
 }
