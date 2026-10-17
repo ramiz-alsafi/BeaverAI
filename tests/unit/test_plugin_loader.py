@@ -1,4 +1,4 @@
-\"""skills.plugin_loader hot-reload detection.
+"""skills.plugin_loader hot-reload detection.
 
 [FIX-PLUGIN-RELOAD] The loader fingerprinted only the plugins/ DIRECTORY's
 mtime, which filesystems bump on add/remove but not when an existing file's
